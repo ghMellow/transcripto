@@ -1,0 +1,19 @@
+[project]
+name = "transcripto"
+version = "0.1.0"
+description = "Video/audio to on-device transcription pipeline"
+authors = [
+    {name = "ghMellow"}
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+transcripto = "src.pipeline:main"
+
+[tool.poetry]
+packages = [{include = "src"}]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

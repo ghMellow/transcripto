@@ -1,0 +1,12 @@
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
+
+src/transcribe
+
+__pycache__/
+*.pyc
+*.pyo
+
+.DS_Store
