@@ -6,7 +6,7 @@ authors = [
     {name = "ghMellow"}
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = ["pyobjc-framework-speech (>=12.1,<13.0)"]
 
 [project.scripts]
 transcripto = "src.pipeline:main"

@@ -20,9 +20,8 @@ guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: language)) 
     exit(1)
 }
 
-let semaphore = DispatchSemaphore(value: 0)
-var exitCode: Int32 = 0
-
+// requestAuthorization and recognitionTask both deliver callbacks on the main queue.
+// dispatchMain() below keeps the run loop alive so those callbacks can fire.
 SFSpeechRecognizer.requestAuthorization { status in
     guard status == .authorized else {
         fputs("Error: speech recognition not authorized (status: \(status.rawValue))\n", stderr)
@@ -36,15 +35,12 @@ SFSpeechRecognizer.requestAuthorization { status in
     recognizer.recognitionTask(with: request) { result, error in
         if let error = error {
             fputs("Error: \(error.localizedDescription)\n", stderr)
-            exitCode = 1
-            semaphore.signal()
-            return
+            exit(1)
         }
         guard let result = result, result.isFinal else { return }
         print(result.bestTranscription.formattedString)
-        semaphore.signal()
+        exit(0)
     }
 }
 
-semaphore.wait()
-exit(exitCode)
+dispatchMain()
