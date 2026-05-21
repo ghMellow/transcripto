@@ -21,6 +21,16 @@ OUTPUT_DIR = REPO_ROOT / "output"
 INPUT_DIR = REPO_ROOT / "input"
 
 
+def extract_only(input_path: Path) -> Path:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    if is_audio(input_path):
+        print(f"Already audio, nothing to extract: {input_path.name}")
+        return input_path
+    out = OUTPUT_DIR / f"{input_path.stem}.m4a"
+    extract_audio(input_path, out)
+    return out
+
+
 def process_file(input_path: Path, lang: str) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -47,6 +57,29 @@ def process_file(input_path: Path, lang: str) -> Path:
     return md_path
 
 
+def batch_extract(folder: Path) -> None:
+    videos = sorted(
+        f for f in folder.iterdir()
+        if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
+    )
+    if not videos:
+        print(f"No video files found in {folder}")
+        return
+
+    print(f"Found {len(videos)} video(s) in {folder}")
+    skipped = 0
+    for video in videos:
+        out = video.with_suffix(".m4a")
+        if out.exists():
+            print(f"Skipping (already converted): {video.name}")
+            skipped += 1
+            continue
+        extract_audio(video, out)
+
+    converted = len(videos) - skipped
+    print(f"\nDone: {converted} converted, {skipped} skipped.")
+
+
 def watch(lang: str) -> None:
     INPUT_DIR.mkdir(parents=True, exist_ok=True)
     known = set(INPUT_DIR.iterdir())
@@ -71,7 +104,17 @@ def main() -> None:
     parser.add_argument("input", nargs="?", help="Path to video or audio file")
     parser.add_argument("--lang", default="it-IT", help="Language code (default: it-IT)")
     parser.add_argument("--watch", action="store_true", help="Watch input/ for new files")
+    parser.add_argument("--extract-only", action="store_true", help="Extract audio to output/ and stop (no transcription)")
+    parser.add_argument("--batch-extract", metavar="DIR", help="Extract all videos in DIR to audio (same folder, skips already converted)")
     args = parser.parse_args()
+
+    if args.batch_extract:
+        folder = Path(args.batch_extract)
+        if not folder.is_dir():
+            print(f"Error: not a directory: {folder}", file=sys.stderr)
+            sys.exit(1)
+        batch_extract(folder)
+        return
 
     if args.watch:
         watch(args.lang)
@@ -86,7 +129,11 @@ def main() -> None:
         print(f"Error: file not found: {input_path}", file=sys.stderr)
         sys.exit(1)
 
-    process_file(input_path, args.lang)
+    if args.extract_only:
+        out = extract_only(input_path)
+        print(f"Audio saved: {out}")
+    else:
+        process_file(input_path, args.lang)
 
 
 if __name__ == "__main__":

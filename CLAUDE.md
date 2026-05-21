@@ -48,7 +48,13 @@ poetry run transcripto input/lecture.mp4
 # 4. or on an audio file directly (skips extraction)
 poetry run transcripto input/recording.m4a
 
-# 5. watch mode — auto-transcribes anything dropped in input/
+# 5. extract audio only (no transcription), saved to output/
+poetry run transcripto --extract-only input/lecture.mp4
+
+# 6. batch-extract all videos in a folder to audio (same folder, skips already done)
+poetry run transcripto --batch-extract input/
+
+# 7. watch mode — auto-transcribes anything dropped in input/
 poetry run transcripto --watch
 ```
 
@@ -85,6 +91,8 @@ Output lands in `output/<stem>.md`.
 - CLI entrypoint, registered as `transcripto` via Poetry scripts
 - Detects if input needs audio extraction or can be transcribed directly
 - Writes `output/<stem>.md` with a `# Title` header
+- `--extract-only`: extract audio to `output/`, no transcription
+- `--batch-extract <dir>`: extract all videos in a folder to `.m4a` next to the source, skips already-converted
 - `--watch` mode: monitors `input/` and auto-processes new files
 
 ### `build.sh`
