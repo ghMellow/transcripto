@@ -50,3 +50,14 @@ poetry run transcripto --batch-extract /folder/ --lang en-US   # N/A for extract
 - Transcription is currently blocked on macOS 26 (TCC issue — see `BLOCKERS.md`)
 - Extraction via VLC works fine regardless
 - VLC must be installed at `/Applications/VLC.app`
+
+
+---
+
+## Example
+
+```
+poetry run transcripto --youtube https://www.youtube.com/@IBMTechnology
+
+poetry run transcripto --youtube https://www.youtube.com/@IBMTechnology --lang en --refresh
+```

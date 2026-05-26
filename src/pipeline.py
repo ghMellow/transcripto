@@ -6,6 +6,7 @@ Usage:
     poetry run transcripto --watch [--lang it]
     poetry run transcripto --extract-only input/lecture.mp4
     poetry run transcripto --batch-extract input/
+    poetry run transcripto --youtube https://www.youtube.com/@Channel [--lang it] [--refresh]
 """
 
 import argparse
@@ -19,24 +20,44 @@ from watchdog.observers import Observer
 from .extract import extract_audio, is_audio, AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
 from .transcriber import transcribe, DEFAULT_LANGUAGE
 from .metadata import extract_metadata
+from .yt_scraper import list_channel_videos
+from .yt_downloader import batch_download
 
 REPO_ROOT = Path(__file__).parent.parent
 OUTPUT_DIR = REPO_ROOT / "output"
 INPUT_DIR = REPO_ROOT / "input"
 
 
-def _build_frontmatter(meta: dict) -> str:
-    def q(v: str) -> str:
-        return f'"{v}"'
+def _q(v: str) -> str:
+    return f'"{v}"'
 
+
+def _build_frontmatter(meta: dict) -> str:
     lines = [
         "---",
-        f"title: {q(meta['title'])}",
+        f"title: {_q(meta['title'])}",
         "source: local",
         f"filename: {meta['filename']}",
         f"duration: {meta['duration']}",
         f"date_created: {meta['date_created']}",
-        f"author: {q(meta['author'])}",
+        f"author: {_q(meta['author'])}",
+        "tags: []",
+        "---",
+    ]
+    return "\n".join(lines)
+
+
+def _build_yt_frontmatter(video: dict) -> str:
+    date = video.get("date_uploaded", "")
+    if len(date) == 8:  # yt-dlp returns YYYYMMDD
+        date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
+    lines = [
+        "---",
+        f"title: {_q(video['title'])}",
+        f"source: {video['url']}",
+        f"channel: {video['channel']}",
+        f"date_uploaded: {date}",
+        f"duration: {video['duration']}",
         "tags: []",
         "---",
     ]
@@ -82,6 +103,38 @@ def process_file(input_path: Path, lang: str) -> Path:
     )
     print(f"Saved: {md_path}")
     return md_path
+
+
+def process_youtube_channel(channel_url: str, lang: str, refresh: bool = False) -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    videos = list_channel_videos(channel_url, refresh=refresh)
+    if not videos:
+        print("No videos found for this channel.")
+        return
+
+    audio_paths = batch_download(videos)
+    total = len(videos)
+
+    for i, (video, audio_path) in enumerate(zip(videos, audio_paths), 1):
+        md_path = OUTPUT_DIR / f"{video['id']}.md"
+        if md_path.exists():
+            print(f"[{i}/{total}] Skipping (already transcribed): {video['title']}")
+            continue
+
+        print(f"[{i}/{total}] Transcribing: {video['title']} [{lang}]")
+        try:
+            text = transcribe(str(audio_path), lang)
+        except Exception as exc:
+            print(f"  Error: {exc}", file=sys.stderr)
+            continue
+
+        frontmatter = _build_yt_frontmatter(video)
+        md_path.write_text(
+            f"{frontmatter}\n\n# {video['title']}\n\n{text}\n",
+            encoding="utf-8",
+        )
+        print(f"  Saved: {md_path}")
 
 
 def batch_extract(folder: Path) -> None:
@@ -150,7 +203,19 @@ def main() -> None:
         "--batch-extract", metavar="DIR",
         help="Extract all videos in DIR to audio (same folder, skips already converted)",
     )
+    parser.add_argument(
+        "--youtube", metavar="CHANNEL_URL",
+        help="Scrape, download, and transcribe all videos from a YouTube channel",
+    )
+    parser.add_argument(
+        "--refresh", action="store_true",
+        help="Force re-fetch of YouTube channel video list (ignores cache)",
+    )
     args = parser.parse_args()
+
+    if args.youtube:
+        process_youtube_channel(args.youtube, args.lang, refresh=args.refresh)
+        return
 
     if args.batch_extract:
         folder = Path(args.batch_extract)
