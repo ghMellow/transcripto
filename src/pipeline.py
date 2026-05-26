@@ -1,24 +1,46 @@
 #!/usr/bin/env python3
-"""
-pipeline.py — full transcription pipeline.
+"""pipeline.py — full transcription pipeline.
 
 Usage:
-    python src/pipeline.py <input_file> [--lang it-IT]
-    python src/pipeline.py --watch [--lang it-IT]
+    poetry run transcripto input/lecture.mp4 [--lang it]
+    poetry run transcripto --watch [--lang it]
+    poetry run transcripto --extract-only input/lecture.mp4
+    poetry run transcripto --batch-extract input/
 """
 
 import argparse
 import sys
-import time
 import tempfile
 from pathlib import Path
 
+from watchdog.events import FileSystemEventHandler, FileCreatedEvent
+from watchdog.observers import Observer
+
 from .extract import extract_audio, is_audio, AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
-from .transcriber import transcribe
+from .transcriber import transcribe, DEFAULT_LANGUAGE
+from .metadata import extract_metadata
 
 REPO_ROOT = Path(__file__).parent.parent
 OUTPUT_DIR = REPO_ROOT / "output"
 INPUT_DIR = REPO_ROOT / "input"
+
+
+def _build_frontmatter(meta: dict) -> str:
+    def q(v: str) -> str:
+        return f'"{v}"'
+
+    lines = [
+        "---",
+        f"title: {q(meta['title'])}",
+        "source: local",
+        f"filename: {meta['filename']}",
+        f"duration: {meta['duration']}",
+        f"date_created: {meta['date_created']}",
+        f"author: {q(meta['author'])}",
+        "tags: []",
+        "---",
+    ]
+    return "\n".join(lines)
 
 
 def extract_only(input_path: Path) -> Path:
@@ -47,12 +69,17 @@ def process_file(input_path: Path, lang: str) -> Path:
     try:
         print(f"Transcribing: {audio_path.name} [{lang}]")
         text = transcribe(str(audio_path), lang)
+        meta = extract_metadata(str(input_path))
     finally:
         if tmp_path:
             tmp_path.unlink(missing_ok=True)
 
+    frontmatter = _build_frontmatter(meta)
     md_path = OUTPUT_DIR / f"{input_path.stem}.md"
-    md_path.write_text(f"# {input_path.stem}\n\n{text}\n", encoding="utf-8")
+    md_path.write_text(
+        f"{frontmatter}\n\n# {meta['title']}\n\n{text}\n",
+        encoding="utf-8",
+    )
     print(f"Saved: {md_path}")
     return md_path
 
@@ -80,32 +107,49 @@ def batch_extract(folder: Path) -> None:
     print(f"\nDone: {converted} converted, {skipped} skipped.")
 
 
+class _TranscriptoHandler(FileSystemEventHandler):
+    def __init__(self, lang: str) -> None:
+        self._lang = lang
+
+    def on_created(self, event: FileCreatedEvent) -> None:
+        if event.is_directory:
+            return
+        path = Path(event.src_path)
+        if path.suffix.lower() not in AUDIO_EXTENSIONS | VIDEO_EXTENSIONS:
+            return
+        try:
+            process_file(path, self._lang)
+        except Exception as exc:
+            print(f"Error processing {path.name}: {exc}", file=sys.stderr)
+
+
 def watch(lang: str) -> None:
     INPUT_DIR.mkdir(parents=True, exist_ok=True)
-    known = set(INPUT_DIR.iterdir())
+    handler = _TranscriptoHandler(lang)
+    observer = Observer()
+    observer.schedule(handler, str(INPUT_DIR), recursive=False)
+    observer.start()
     print(f"Watching {INPUT_DIR} ... (Ctrl-C to stop)")
-
-    while True:
-        time.sleep(2)
-        current = set(INPUT_DIR.iterdir())
-        new_files = current - known
-        known = current
-
-        for f in sorted(new_files):
-            if f.suffix.lower() in AUDIO_EXTENSIONS | VIDEO_EXTENSIONS:
-                try:
-                    process_file(f, lang)
-                except Exception as exc:
-                    print(f"Error processing {f.name}: {exc}", file=sys.stderr)
+    try:
+        observer.join()
+    except KeyboardInterrupt:
+        observer.stop()
+        observer.join()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Transcribe video/audio to markdown.")
     parser.add_argument("input", nargs="?", help="Path to video or audio file")
-    parser.add_argument("--lang", default="it-IT", help="Language code (default: it-IT)")
+    parser.add_argument("--lang", default=DEFAULT_LANGUAGE, help="Language code (default: it)")
     parser.add_argument("--watch", action="store_true", help="Watch input/ for new files")
-    parser.add_argument("--extract-only", action="store_true", help="Extract audio to output/ and stop (no transcription)")
-    parser.add_argument("--batch-extract", metavar="DIR", help="Extract all videos in DIR to audio (same folder, skips already converted)")
+    parser.add_argument(
+        "--extract-only", action="store_true",
+        help="Extract audio to output/ and stop (no transcription)",
+    )
+    parser.add_argument(
+        "--batch-extract", metavar="DIR",
+        help="Extract all videos in DIR to audio (same folder, skips already converted)",
+    )
     args = parser.parse_args()
 
     if args.batch_extract:
