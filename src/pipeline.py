@@ -26,6 +26,7 @@ from .yt_downloader import batch_download
 REPO_ROOT = Path(__file__).parent.parent
 OUTPUT_DIR = REPO_ROOT / "output"
 INPUT_DIR = REPO_ROOT / "input"
+DATA_DIR = REPO_ROOT / "data"
 
 
 def _q(v: str) -> str:
@@ -106,20 +107,26 @@ def process_file(input_path: Path, lang: str) -> Path:
 
 
 def process_youtube_channel(channel_url: str, lang: str, refresh: bool = False) -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    videos = list_channel_videos(channel_url, refresh=refresh)
+    videos, slug = list_channel_videos(channel_url, refresh=refresh)
     if not videos:
         print("No videos found for this channel.")
         return
 
-    audio_paths = batch_download(videos)
+    audio_dir = DATA_DIR / slug / "audio"
+    out_dir = OUTPUT_DIR / slug
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    audio_paths = batch_download(videos, audio_dir)
     total = len(videos)
 
     for i, (video, audio_path) in enumerate(zip(videos, audio_paths), 1):
-        md_path = OUTPUT_DIR / f"{video['id']}.md"
+        md_path = out_dir / f"{video['id']}.md"
         if md_path.exists():
             print(f"[{i}/{total}] Skipping (already transcribed): {video['title']}")
+            continue
+
+        if not audio_path.exists():
+            print(f"[{i}/{total}] Skipping (download failed): {video['title']}")
             continue
 
         print(f"[{i}/{total}] Transcribing: {video['title']} [{lang}]")

@@ -3,7 +3,16 @@
     "allow": [
       "Bash(poetry install *)",
       "Bash(poetry lock *)",
-      "Bash(poetry run *)"
+      "Bash(poetry run *)",
+      "Bash(python3 -c ' *)",
+      "Read(//Users/nicolotermine/.claude/**)",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(deno --version)",
+      "Bash(bun --version)"
+    ],
+    "additionalDirectories": [
+      "/Users/nicolotermine/.claude"
     ]
   }
 }
