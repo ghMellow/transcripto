@@ -15,4 +15,7 @@ __pycache__/
 
 data/**
 !data/**/
+!data/**/.gitkeep
 !data/**/*.json
+
+.claude/
