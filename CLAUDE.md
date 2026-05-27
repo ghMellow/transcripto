@@ -9,7 +9,7 @@ Turn video lessons (or any audio) into clean markdown notes, fully local, no ext
 Pipeline:
 
 ```text
-input/<file>  →  extract.py (VLC)  →  transcriber.py (mlx-whisper)  →  output/<file>.md
+<any path>  →  extract.py (VLC)  →  transcriber.py (mlx-whisper)  →  data/<name>/transcription/<file>.md
 ```
 
 ---
@@ -18,19 +18,27 @@ input/<file>  →  extract.py (VLC)  →  transcriber.py (mlx-whisper)  →  out
 
 ```text
 transcripto/
-├── input/               # drop videos or audio here (gitignored)
-├── output/              # markdown transcriptions land here (gitignored)
+├── data/                    # all project data (gitignored)
+│   └── <name>/              # one folder per project or channel
+│       ├── audio/           # extracted or downloaded audio (.m4a)
+│       ├── transcription/   # markdown output
+│       └── video_list.json  # YouTube metadata cache (YouTube mode only)
 ├── src/
-│   ├── pipeline.py      # CLI entrypoint — orchestrates the full flow
-│   ├── extract.py       # video → audio via VLC
-│   ├── transcriber.py   # transcription via mlx-whisper (replaces broken Swift/SFSpeechRecognizer)
-│   └── metadata.py      # extracts metadata from local files via ffprobe
+│   ├── pipeline.py          # CLI entrypoint — orchestrates the full flow
+│   ├── extract.py           # video → audio via VLC
+│   ├── transcriber.py       # transcription via mlx-whisper
+│   ├── metadata.py          # extracts metadata from local files via ffprobe
+│   ├── yt_scraper.py        # lists YouTube channel videos via yt-dlp
+│   └── yt_downloader.py     # batch downloads audio from YouTube
 ├── pyproject.toml
 └── CLAUDE.md
 ```
 
 **Removed from original layout:**
-- `transcribe.swift` — was using SFSpeechRecognizer, blocked by macOS 26 TCC (see BLOCKERS.md)
+
+- `input/` — was a fixed drop zone; replaced by arbitrary path via `--name` CLI flag
+- `output/` — was a fixed output dir; replaced by `data/<name>/transcription/`
+- `transcribe.swift` — was using SFSpeechRecognizer, blocked by macOS 26 TCC
 - `build.sh` — no longer needed, no Swift binary
 
 ---
@@ -50,24 +58,27 @@ poetry install
 
 # first run downloads mlx-whisper model (~809MB for large-v3-turbo, cached after)
 
-# 2. single file — full pipeline
-poetry run transcripto input/lecture.mp4
-poetry run transcripto input/recording.m4a   # audio input skips extraction
+# 2. local: single file (video or audio), any path on disk
+poetry run transcripto --name Fisica /path/to/video.mp4
+poetry run transcripto --name Fisica /path/to/recording.m4a  # audio skips extraction
 
-# 3. extract audio only
-poetry run transcripto --extract-only input/lecture.mp4
+# 3. local: entire folder (batch — auto-detects video vs audio)
+poetry run transcripto --name Fisica /Volumes/HDD/lezioni/
 
-# 4. batch extract all videos in a folder
-poetry run transcripto --batch-extract input/
+# 4. local: watch a folder, auto-transcribes new files as they arrive
+poetry run transcripto --name Fisica --watch /path/to/folder/
 
-# 5. watch mode — auto-transcribes anything dropped in input/
-poetry run transcripto --watch
+# 5. youtube: download + transcribe a full channel (name auto-derived)
+poetry run transcripto --youtube https://www.youtube.com/@IBMTechnology --lang en
 
-# 6. language (default: Italian)
-poetry run transcripto input/lecture.mp4 --lang en
+# 6. batch-transcribe: transcribe already-downloaded audio (resume-safe)
+poetry run transcripto --batch-transcribe data/IBMTechnology/audio/ --lang en
+
+# 7. language (default: Italian)
+poetry run transcripto --name Fisica /path/to/video.mp4 --lang en
 ```
 
-Output lands in `output/<stem>.md`.
+Output always lands in `data/<name>/transcription/<stem>.md`.
 
 ---
 
@@ -77,6 +88,7 @@ Every transcription file starts with a structured metadata block, then the trans
 This format is Obsidian-compatible and LLM-friendly.
 
 ### Local file output
+
 ```markdown
 ---
 title: "Lecture 03 - Neural Networks"
@@ -93,11 +105,12 @@ tags: []
 transcript text here...
 ```
 
-Metadata is extracted via `ffprobe` (bundled with ffmpeg). Fields like `title` and `author`
-come from the file's embedded ID3/container tags — often empty for downloaded files,
-in which case `filename` (without extension) is used as title fallback.
+Metadata is extracted via `ffprobe`. Fields like `title` and `author` come from the file's
+embedded ID3/container tags — often empty for downloaded files, in which case `filename`
+(without extension) is used as title fallback.
 
-### YouTube output (future — see Future Work section)
+### YouTube output
+
 ```markdown
 ---
 title: "What is Quantum Computing?"
@@ -121,16 +134,16 @@ transcript text here...
 
 - Input: any video or audio path
 - Uses VLC (`/Applications/VLC.app/Contents/MacOS/VLC`) to extract audio as `.m4a`
-- Output: path to extracted audio file (written to a temp dir)
+- Output: `.m4a` written to `data/<name>/audio/`
 - Skips extraction if input is already an audio format (`.m4a`, `.mp3`, `.wav`, `.aiff`)
 
 ### `src/transcriber.py`
 
-**This module replaces the broken Swift/SFSpeechRecognizer approach.**
+**Replaces the broken Swift/SFSpeechRecognizer approach.**
 
 - Uses `mlx-whisper` — pip-installable, Apple Silicon GPU-accelerated via Metal, 100% offline
 - Pre-processes audio to 16kHz mono WAV via ffmpeg before passing to Whisper (improves stability)
-- Loads model once, reuses across batch runs
+- Model loaded once per process — batch runs reuse it with no re-load overhead
 - Signature: `def transcribe(audio_path: str, language: str = "it") -> str`
 - Cleans up temp WAV after transcription
 
@@ -142,80 +155,51 @@ from pathlib import Path
 WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"   # production
 # WHISPER_MODEL = "mlx-community/whisper-base"           # dev/test (faster, lower quality)
 
-def preprocess(input_path: str, output_path: str) -> str:
-    """Convert to 16kHz mono WAV for optimal Whisper input."""
-    subprocess.run([
-        "ffmpeg", "-i", input_path,
-        "-ac", "1", "-ar", "16000",
-        output_path, "-y", "-loglevel", "error"
-    ], check=True)
-    return output_path
-
 def transcribe(audio_path: str, language: str = "it") -> str:
     wav_path = str(Path(audio_path).with_suffix("_16k.wav"))
-    preprocess(audio_path, wav_path)
-    result = mlx_whisper.transcribe(
-        wav_path,
-        path_or_hf_repo=WHISPER_MODEL,
-        language=language,
-    )
-    Path(wav_path).unlink()  # cleanup temp file
+    # preprocess to 16kHz mono WAV, then transcribe, then cleanup
+    ...
     return result["text"]
 ```
 
 **Whisper model reference:**
 
 | Model | Size | Speed on M4 Pro | Accuracy |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `large-v3-turbo` | ~809MB | 5–8x realtime | 95–98% — **default** |
 | `base` | ~74MB | very fast | ~85% — dev/test only |
 
-Model is downloaded automatically from HuggingFace on first run, cached locally after.
+Model is downloaded automatically from HuggingFace on first run, cached at
+`~/.cache/huggingface/hub/` locally after.
 
 ### `src/metadata.py`
 
 Extracts metadata from local video/audio files using `ffprobe` (part of ffmpeg, no extra install).
+Returns: `title`, `author`, `duration`, `date_created`, `filename`.
+Falls back gracefully if tags are missing (uses filename stem as title).
 
-```python
-import subprocess, json
-from pathlib import Path
+### `src/yt_scraper.py`
 
-def extract_metadata(file_path: str) -> dict:
-    """
-    Returns dict with: title, author, duration, date_created, filename.
-    Falls back gracefully if tags are missing.
-    """
-    result = subprocess.run([
-        "ffprobe", "-v", "quiet",
-        "-print_format", "json",
-        "-show_format", file_path
-    ], capture_output=True, text=True, check=True)
+- Lists all videos from a YouTube channel via yt-dlp flat-playlist (fast, no full extract)
+- Caches result to `data/<slug>/video_list.json` to avoid re-fetching (1000+ videos = slow)
+- `--refresh` flag forces re-fetch
 
-    data = json.loads(result.stdout)
-    tags = data.get("format", {}).get("tags", {})
-    duration_s = float(data.get("format", {}).get("duration", 0))
-    duration = f"{int(duration_s // 3600):02d}:{int((duration_s % 3600) // 60):02d}:{int(duration_s % 60):02d}"
+### `src/yt_downloader.py`
 
-    stem = Path(file_path).stem
-    return {
-        "title": tags.get("title") or stem,
-        "author": tags.get("artist") or tags.get("author") or "",
-        "duration": duration,
-        "date_created": tags.get("date") or tags.get("creation_time", "")[:10],
-        "filename": Path(file_path).name,
-    }
-```
+- Batch downloads audio as `.m4a` via yt-dlp Python API
+- Skip-if-exists (resume-safe)
+- 2s delay between downloads to avoid YouTube throttling
+- `socket_timeout=60`, `retries=3` to handle CDN drops (not rate limits)
 
 ### `src/pipeline.py`
 
-- CLI entrypoint, registered as `transcripto` via Poetry scripts
-- Detects if input needs audio extraction or can be transcribed directly
-- Calls `metadata.extract_metadata()` to build YAML frontmatter
-- Writes `output/<stem>.md` with frontmatter + transcript
-- `--extract-only`: extract audio to `output/`, no transcription
-- `--batch-extract <dir>`: extract all videos in a folder, skips already-converted
-- `--watch` mode: monitors `input/` with watchdog, auto-processes new files
-- `--lang`: language code passed to transcriber (default: `it`)
+CLI entrypoint, registered as `transcripto` via Poetry scripts. Orchestrates:
+
+- `--name NAME path` — local single file or folder, any path on disk
+- `--name NAME --watch path` — FSEvents-based watch mode (zero CPU at rest)
+- `--youtube URL` — full YouTube channel pipeline (scrape → download → transcribe)
+- `--batch-transcribe DIR` — transcribe already-downloaded audio folder (resume-safe)
+- All output → `data/<name>/transcription/`; extracted audio → `data/<name>/audio/`
 
 ---
 
@@ -224,10 +208,9 @@ def extract_metadata(file_path: str) -> dict:
 All runtime config as named constants at the top of each module:
 
 | Constant | Module | Default |
-|---|---|---|
+| --- | --- | --- |
 | `VLC_PATH` | `extract.py` | `/Applications/VLC.app/Contents/MacOS/VLC` |
-| `OUTPUT_DIR` | `pipeline.py` | `output/` (repo root) |
-| `DEFAULT_LANGUAGE` | `pipeline.py` | `it` |
+| `DEFAULT_LANGUAGE` | `transcriber.py` | `it` |
 | `WHISPER_MODEL` | `transcriber.py` | `mlx-community/whisper-large-v3-turbo` |
 
 ---
@@ -238,6 +221,7 @@ All runtime config as named constants at the top of each module:
 # pyproject.toml — relevant deps
 mlx-whisper = ">=0.4.0"
 watchdog = ">=4.0.0"    # for --watch mode
+yt-dlp = "*"            # for --youtube mode
 ```
 
 **System dependency:** `ffmpeg` via `brew install ffmpeg` (provides both `ffmpeg` and `ffprobe`)
@@ -257,30 +241,11 @@ No other external dependencies. No API keys. No `.env` needed.
 
 ## Future work
 
-### Immediate next: merge with yt-pipeline project
-
-A separate project (`yt-pipeline`) automates downloading audio from YouTube channels
-and transcribing them. The transcription engine is identical (mlx-whisper).
-Plan: merge both into a single tool with two input modes:
-
-```text
-# local file (current)
-poetry run transcripto input/lecture.mp4
-
-# youtube channel (future)
-poetry run transcripto --youtube https://www.youtube.com/@IBMTechnology
-```
-
-The YouTube mode adds:
-- `src/yt_scraper.py` — lists all videos from a channel via yt-dlp flat-playlist, cached to `data/video_list.json`
-- `src/yt_downloader.py` — batch downloads audio as .m4a via yt-dlp Python API, with delay between downloads and skip-if-exists
-- YouTube frontmatter: title, channel, source URL, upload date, duration (all available from yt-dlp metadata)
-- Rate limiting: 2s delay between downloads to avoid YouTube throttling (not scraping — yt-dlp uses YouTube's internal API, same as the browser)
-
 ### Web UI (non-technical users)
 
 Minimal local web interface (Flask or FastAPI + simple HTML) so non-technical users
 can use the tool without a terminal:
+
 - Drop zone for local files
 - URL input for YouTube links
 - Progress indicator

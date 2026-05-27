@@ -28,7 +28,7 @@ def transcribe(audio_path: str, language: str = DEFAULT_LANGUAGE) -> str:
     if not path.exists():
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-    wav_path = str(path.with_suffix("_16k.wav"))
+    wav_path = str(path.parent / (path.stem + "_16k.wav"))
     _preprocess(audio_path, wav_path)
 
     try:

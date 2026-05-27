@@ -1,17 +1,29 @@
 #!/usr/bin/env python3
 """pipeline.py — full transcription pipeline.
 
+All output lives under data/<name>/:
+    data/<name>/audio/          extracted or downloaded audio
+    data/<name>/transcription/  markdown output
+
 Usage:
-    poetry run transcripto input/lecture.mp4 [--lang it]
-    poetry run transcripto --watch [--lang it]
-    poetry run transcripto --extract-only input/lecture.mp4
-    poetry run transcripto --batch-extract input/
-    poetry run transcripto --youtube https://www.youtube.com/@Channel [--lang it] [--refresh]
+    # local: single file or folder, any path on disk
+    poetry run transcripto --name Fisica /path/to/video.mp4 [--lang it]
+    poetry run transcripto --name Fisica /Volumes/HDD/lezioni/ [--lang it]
+
+    # local: watch a folder for new files
+    poetry run transcripto --name Fisica --watch /path/to/folder/ [--lang it]
+
+    # youtube: download + transcribe a full channel
+    poetry run transcripto --youtube https://www.youtube.com/@Channel [--lang en] [--refresh]
+
+    # batch-transcribe: transcribe already-downloaded audio in a folder
+    poetry run transcripto --batch-transcribe data/IBMTechnology/audio/ [--lang en]
 """
 
 import argparse
+import json
+import re
 import sys
-import tempfile
 from pathlib import Path
 
 from watchdog.events import FileSystemEventHandler, FileCreatedEvent
@@ -24,13 +36,29 @@ from .yt_scraper import list_channel_videos
 from .yt_downloader import batch_download
 
 REPO_ROOT = Path(__file__).parent.parent
-OUTPUT_DIR = REPO_ROOT / "output"
-INPUT_DIR = REPO_ROOT / "input"
 DATA_DIR = REPO_ROOT / "data"
 
+MEDIA_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
+
+
+# ---------------------------------------------------------------------------
+# Frontmatter builders
+# ---------------------------------------------------------------------------
 
 def _q(v: str) -> str:
     return f'"{v}"'
+
+
+def _safe_stem(title: str, max_len: int = 120) -> str:
+    """Convert a video title to a safe filename stem (no extension).
+
+    Removes characters that are invalid on macOS/Windows/Linux filesystems,
+    collapses whitespace, and truncates to max_len.
+    """
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", title)
+    safe = re.sub(r"\s+", " ", safe).strip()
+    safe = safe.rstrip(".")          # trailing dots are problematic on Windows
+    return safe[:max_len] if safe else "untitled"
 
 
 def _build_frontmatter(meta: dict) -> str:
@@ -65,68 +93,128 @@ def _build_yt_frontmatter(video: dict) -> str:
     return "\n".join(lines)
 
 
-def extract_only(input_path: Path) -> Path:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    if is_audio(input_path):
-        print(f"Already audio, nothing to extract: {input_path.name}")
-        return input_path
-    out = OUTPUT_DIR / f"{input_path.stem}.m4a"
-    extract_audio(input_path, out)
-    return out
+# ---------------------------------------------------------------------------
+# Local file processing
+# ---------------------------------------------------------------------------
+
+def _transcription_dir(name: str) -> Path:
+    return DATA_DIR / name / "transcription"
 
 
-def process_file(input_path: Path, lang: str) -> Path:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def _audio_dir(name: str) -> Path:
+    return DATA_DIR / name / "audio"
+
+
+def process_file(input_path: Path, name: str, lang: str, keep_audio: bool = False) -> Path:
+    """Transcribe a single video or audio file into data/<name>/transcription/.
+
+    If the input is a video, the extracted audio is deleted after transcription
+    unless keep_audio=True. Original audio files passed directly are never deleted.
+    """
+    t_dir = _transcription_dir(name)
+    t_dir.mkdir(parents=True, exist_ok=True)
+
+    md_path = t_dir / f"{input_path.stem}.md"
+    if md_path.exists():
+        print(f"Skip (exists): {md_path.name}")
+        return md_path
 
     if is_audio(input_path):
         audio_path = input_path
-        tmp_path = None
+        extracted = False  # original audio — never delete
     else:
-        tmp = tempfile.NamedTemporaryFile(suffix=".m4a", delete=False)
-        tmp.close()
-        tmp_path = Path(tmp.name)
-        extract_audio(input_path, tmp_path)
-        audio_path = tmp_path
+        a_dir = _audio_dir(name)
+        a_dir.mkdir(parents=True, exist_ok=True)
+        audio_out = a_dir / f"{input_path.stem}.m4a"
+        if not audio_out.exists():
+            extract_audio(input_path, audio_out)
+        audio_path = audio_out
+        extracted = True  # we created this — safe to delete after
 
-    try:
-        print(f"Transcribing: {audio_path.name} [{lang}]")
-        text = transcribe(str(audio_path), lang)
-        meta = extract_metadata(str(input_path))
-    finally:
-        if tmp_path:
-            tmp_path.unlink(missing_ok=True)
+    print(f"Transcribing: {input_path.name} [{lang}]")
+    text = transcribe(str(audio_path), lang)
+    meta = extract_metadata(str(input_path))
 
     frontmatter = _build_frontmatter(meta)
-    md_path = OUTPUT_DIR / f"{input_path.stem}.md"
     md_path.write_text(
         f"{frontmatter}\n\n# {meta['title']}\n\n{text}\n",
         encoding="utf-8",
     )
     print(f"Saved: {md_path}")
+
+    if extracted and not keep_audio:
+        audio_path.unlink(missing_ok=True)
+        print(f"Deleted audio: {audio_path.name}")
+
     return md_path
 
 
-def process_youtube_channel(channel_url: str, lang: str, refresh: bool = False) -> None:
+def process_folder(folder: Path, name: str, lang: str, keep_audio: bool = False) -> None:
+    """Transcribe all video/audio files in folder into data/<name>/transcription/."""
+    files = sorted(
+        f for f in folder.iterdir()
+        if f.is_file() and f.suffix.lower() in MEDIA_EXTENSIONS
+    )
+    if not files:
+        print(f"No media files found in {folder}")
+        return
+
+    total = len(files)
+    errors = 0
+    print(f"Found {total} file(s) in {folder}")
+
+    for i, f in enumerate(files, 1):
+        print(f"[{i}/{total}]", end=" ")
+        try:
+            process_file(f, name, lang, keep_audio=keep_audio)
+        except Exception as exc:
+            print(f"  Error: {exc}", file=sys.stderr)
+            errors += 1
+
+    print(f"\nDone. Errors: {errors}")
+
+
+# ---------------------------------------------------------------------------
+# YouTube channel processing
+# ---------------------------------------------------------------------------
+
+def process_youtube_channel(
+    channel_url: str, lang: str, refresh: bool = False, keep_audio: bool = False
+) -> None:
+    """Download and transcribe all videos from a YouTube channel.
+
+    Audio  → data/<slug>/audio/   (deleted after transcription unless keep_audio=True)
+    Output → data/<slug>/transcription/
+
+    Videos that already have a transcription .md are skipped entirely — no re-download.
+    """
     videos, slug = list_channel_videos(channel_url, refresh=refresh)
     if not videos:
         print("No videos found for this channel.")
         return
 
     audio_dir = DATA_DIR / slug / "audio"
-    out_dir = OUTPUT_DIR / slug
-    out_dir.mkdir(parents=True, exist_ok=True)
+    t_dir = DATA_DIR / slug / "transcription"
+    t_dir.mkdir(parents=True, exist_ok=True)
 
-    audio_paths = batch_download(videos, audio_dir)
-    total = len(videos)
+    # Skip videos already transcribed — transcription file is the source of truth.
+    # This avoids re-downloading audio that was deleted after a previous transcription.
+    pending = [v for v in videos if not (t_dir / f"{_safe_stem(v['title'])}.md").exists()]
+    already_done = len(videos) - len(pending)
+    if already_done:
+        print(f"Skipping {already_done} already-transcribed video(s).")
+    if not pending:
+        print("All videos already transcribed.")
+        return
 
-    for i, (video, audio_path) in enumerate(zip(videos, audio_paths), 1):
-        md_path = out_dir / f"{video['id']}.md"
-        if md_path.exists():
-            print(f"[{i}/{total}] Skipping (already transcribed): {video['title']}")
-            continue
+    audio_paths = batch_download(pending, audio_dir)
+    total = len(pending)
+
+    for i, (video, audio_path) in enumerate(zip(pending, audio_paths), 1):
+        md_path = t_dir / f"{_safe_stem(video['title'])}.md"
 
         if not audio_path.exists():
-            print(f"[{i}/{total}] Skipping (download failed): {video['title']}")
+            print(f"[{i}/{total}] Skip (download failed): {video['title']}")
             continue
 
         print(f"[{i}/{total}] Transcribing: {video['title']} [{lang}]")
@@ -141,55 +229,117 @@ def process_youtube_channel(channel_url: str, lang: str, refresh: bool = False) 
             f"{frontmatter}\n\n# {video['title']}\n\n{text}\n",
             encoding="utf-8",
         )
-        print(f"  Saved: {md_path}")
+        print(f"  Saved: {md_path.name}")
+
+        if not keep_audio:
+            audio_path.unlink(missing_ok=True)
 
 
-def batch_extract(folder: Path) -> None:
-    videos = sorted(
-        f for f in folder.iterdir()
-        if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
+# ---------------------------------------------------------------------------
+# Batch-transcribe: already-downloaded audio folder (resume-safe)
+# ---------------------------------------------------------------------------
+
+def batch_transcribe_local(
+    audio_dir: Path, out_dir: Path, lang: str, keep_audio: bool = False
+) -> None:
+    """Transcribe all audio files in audio_dir, output markdown to out_dir.
+
+    Reads video_list.json from parent dir (if present) for YouTube frontmatter.
+    Falls back to ffprobe metadata for local files.
+    Skips files already transcribed (out_dir/<stem>.md exists).
+    """
+    audio_files = sorted(
+        f for f in audio_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
     )
-    if not videos:
-        print(f"No video files found in {folder}")
+    if not audio_files:
+        print(f"No audio files found in {audio_dir}")
         return
 
-    print(f"Found {len(videos)} video(s) in {folder}")
-    skipped = 0
-    for video in videos:
-        out = video.with_suffix(".m4a")
-        if out.exists():
-            print(f"Skipping (already converted): {video.name}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load YouTube metadata index if available
+    yt_index: dict[str, dict] = {}
+    video_list_path = audio_dir.parent / "video_list.json"
+    if video_list_path.exists():
+        data = json.loads(video_list_path.read_text(encoding="utf-8"))
+        videos = data.get("videos", data) if isinstance(data, dict) else data
+        yt_index = {v["id"]: v for v in videos if "id" in v}
+        print(f"Loaded YouTube metadata for {len(yt_index)} videos from {video_list_path.name}")
+
+    total = len(audio_files)
+    skipped = errors = 0
+
+    for i, audio_path in enumerate(audio_files, 1):
+        stem = audio_path.stem
+        md_path = out_dir / f"{stem}.md"
+
+        if md_path.exists():
+            print(f"[{i}/{total}] Skip (exists): {stem}")
             skipped += 1
             continue
-        extract_audio(video, out)
 
-    converted = len(videos) - skipped
-    print(f"\nDone: {converted} converted, {skipped} skipped.")
+        print(f"[{i}/{total}] Transcribing: {stem} [{lang}]")
+        try:
+            text = transcribe(str(audio_path), lang)
+        except Exception as exc:
+            print(f"  Error: {exc}", file=sys.stderr)
+            errors += 1
+            continue
 
+        video_meta = yt_index.get(stem)
+        if video_meta:
+            frontmatter = _build_yt_frontmatter(video_meta)
+            title = video_meta.get("title", stem)
+            md_path = out_dir / f"{_safe_stem(title)}.md"
+        else:
+            meta = extract_metadata(str(audio_path))
+            frontmatter = _build_frontmatter(meta)
+            title = meta["title"]
+            # md_path already set above using stem (filename-based for non-YT audio)
+
+        md_path.write_text(
+            f"{frontmatter}\n\n# {title}\n\n{text}\n",
+            encoding="utf-8",
+        )
+        print(f"  Saved: {md_path.name}")
+
+        if not keep_audio:
+            audio_path.unlink(missing_ok=True)
+
+    done = total - skipped - errors
+    print(f"\nDone: {done} transcribed, {skipped} skipped, {errors} errors.")
+
+
+# ---------------------------------------------------------------------------
+# Watch mode
+# ---------------------------------------------------------------------------
 
 class _TranscriptoHandler(FileSystemEventHandler):
-    def __init__(self, lang: str) -> None:
+    def __init__(self, name: str, lang: str) -> None:
+        self._name = name
         self._lang = lang
 
     def on_created(self, event: FileCreatedEvent) -> None:
         if event.is_directory:
             return
         path = Path(event.src_path)
-        if path.suffix.lower() not in AUDIO_EXTENSIONS | VIDEO_EXTENSIONS:
+        if path.suffix.lower() not in MEDIA_EXTENSIONS:
             return
         try:
-            process_file(path, self._lang)
+            process_file(path, self._name, self._lang)
         except Exception as exc:
             print(f"Error processing {path.name}: {exc}", file=sys.stderr)
 
 
-def watch(lang: str) -> None:
-    INPUT_DIR.mkdir(parents=True, exist_ok=True)
-    handler = _TranscriptoHandler(lang)
+def watch(watch_path: Path, name: str, lang: str) -> None:
+    watch_path.mkdir(parents=True, exist_ok=True)
+    handler = _TranscriptoHandler(name, lang)
     observer = Observer()
-    observer.schedule(handler, str(INPUT_DIR), recursive=False)
+    observer.schedule(handler, str(watch_path), recursive=False)
     observer.start()
-    print(f"Watching {INPUT_DIR} ... (Ctrl-C to stop)")
+    print(f"Watching {watch_path} for new media ... (Ctrl-C to stop)")
+    print(f"Output → data/{name}/transcription/")
     try:
         observer.join()
     except KeyboardInterrupt:
@@ -197,59 +347,116 @@ def watch(lang: str) -> None:
         observer.join()
 
 
+# ---------------------------------------------------------------------------
+# CLI entrypoint
+# ---------------------------------------------------------------------------
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Transcribe video/audio to markdown.")
-    parser.add_argument("input", nargs="?", help="Path to video or audio file")
-    parser.add_argument("--lang", default=DEFAULT_LANGUAGE, help="Language code (default: it)")
-    parser.add_argument("--watch", action="store_true", help="Watch input/ for new files")
-    parser.add_argument(
-        "--extract-only", action="store_true",
-        help="Extract audio to output/ and stop (no transcription)",
+    parser = argparse.ArgumentParser(
+        description="Transcribe video/audio to markdown. Output: data/<name>/transcription/",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # local file or folder (any path on disk)
+  transcripto --name Fisica /path/to/video.mp4
+  transcripto --name Fisica /Volumes/HDD/lezioni/
+
+  # watch a folder for new files
+  transcripto --name Fisica --watch /path/to/folder/
+
+  # youtube channel (name auto-derived from channel)
+  transcripto --youtube https://www.youtube.com/@IBMTechnology --lang en
+
+  # transcribe already-downloaded audio
+  transcripto --batch-transcribe data/IBMTechnology/audio/ --lang en
+""",
     )
     parser.add_argument(
-        "--batch-extract", metavar="DIR",
-        help="Extract all videos in DIR to audio (same folder, skips already converted)",
+        "--name", metavar="NAME",
+        help="Project name — determines data/<name>/ output folder (required for local mode)",
+    )
+    parser.add_argument(
+        "input", nargs="?",
+        help="Path to video/audio file or folder (local mode)",
+    )
+    parser.add_argument(
+        "--lang", default=DEFAULT_LANGUAGE,
+        help=f"Language code (default: {DEFAULT_LANGUAGE})",
+    )
+    parser.add_argument(
+        "--watch", action="store_true",
+        help="Watch the given folder for new media files (requires --name and input path)",
     )
     parser.add_argument(
         "--youtube", metavar="CHANNEL_URL",
-        help="Scrape, download, and transcribe all videos from a YouTube channel",
+        help="Download and transcribe all videos from a YouTube channel",
     )
     parser.add_argument(
         "--refresh", action="store_true",
         help="Force re-fetch of YouTube channel video list (ignores cache)",
     )
+    parser.add_argument(
+        "--batch-transcribe", metavar="AUDIO_DIR",
+        help="Transcribe all audio files in AUDIO_DIR (skips already done)",
+    )
+    parser.add_argument(
+        "--out-dir", metavar="DIR",
+        help="Output dir for --batch-transcribe (default: <parent>/transcription/)",
+    )
+    parser.add_argument(
+        "--keep-audio", action="store_true",
+        help="Keep audio files after transcription (default: delete to save space)",
+    )
     args = parser.parse_args()
 
+    # --- YouTube mode ---
     if args.youtube:
-        process_youtube_channel(args.youtube, args.lang, refresh=args.refresh)
+        process_youtube_channel(args.youtube, args.lang, refresh=args.refresh, keep_audio=args.keep_audio)
         return
 
-    if args.batch_extract:
-        folder = Path(args.batch_extract)
-        if not folder.is_dir():
-            print(f"Error: not a directory: {folder}", file=sys.stderr)
+    # --- Batch-transcribe mode (already-downloaded audio) ---
+    if args.batch_transcribe:
+        audio_dir = Path(args.batch_transcribe)
+        if not audio_dir.is_dir():
+            print(f"Error: not a directory: {audio_dir}", file=sys.stderr)
             sys.exit(1)
-        batch_extract(folder)
+        out_dir = Path(args.out_dir) if args.out_dir else audio_dir.parent / "transcription"
+        print(f"Output dir: {out_dir}")
+        batch_transcribe_local(audio_dir, out_dir, args.lang, keep_audio=args.keep_audio)
         return
 
-    if args.watch:
-        watch(args.lang)
-        return
-
-    if not args.input:
+    # --- Local mode: requires --name ---
+    if not args.name:
         parser.print_help()
         sys.exit(1)
 
+    if not args.input:
+        parser.error("local mode requires an input path (file or folder)")
+
     input_path = Path(args.input)
     if not input_path.exists():
-        print(f"Error: file not found: {input_path}", file=sys.stderr)
+        print(f"Error: path not found: {input_path}", file=sys.stderr)
         sys.exit(1)
 
-    if args.extract_only:
-        out = extract_only(input_path)
-        print(f"Audio saved: {out}")
-    else:
-        process_file(input_path, args.lang)
+    # Watch mode
+    if args.watch:
+        if not input_path.is_dir():
+            parser.error("--watch requires a directory path")
+        watch(input_path, args.name, args.lang)
+        return
+
+    # Single file
+    if input_path.is_file():
+        process_file(input_path, args.name, args.lang, keep_audio=args.keep_audio)
+        return
+
+    # Folder: batch process all media files
+    if input_path.is_dir():
+        process_folder(input_path, args.name, args.lang, keep_audio=args.keep_audio)
+        return
+
+    print(f"Error: not a file or directory: {input_path}", file=sys.stderr)
+    sys.exit(1)
 
 
 if __name__ == "__main__":
