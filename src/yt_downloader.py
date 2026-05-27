@@ -6,6 +6,20 @@ from pathlib import Path
 
 _DELAY_BETWEEN_DOWNLOADS = 2  # seconds — avoids YouTube throttling
 _SOCKET_TIMEOUT = 60           # seconds — abort stalled connections
+MAX_DURATION_SECONDS = 3600    # skip videos longer than 1 hour
+
+
+def _parse_duration(duration_str: str) -> int:
+    """Parse HH:MM:SS or MM:SS string into total seconds. Returns 0 on parse error."""
+    try:
+        parts = [int(p) for p in duration_str.split(":")]
+        if len(parts) == 3:
+            return parts[0] * 3600 + parts[1] * 60 + parts[2]
+        if len(parts) == 2:
+            return parts[0] * 60 + parts[1]
+    except (ValueError, AttributeError):
+        pass
+    return 0
 
 
 def _audio_path(video: dict, output_dir: Path) -> Path:
@@ -53,6 +67,13 @@ def batch_download(videos: list[dict], output_dir: Path) -> list[Path]:
         if out_path.exists():
             print(f"[{i}/{total}] Skipping (already downloaded): {video['title']}")
             results.append(out_path)
+            continue
+
+        duration_s = _parse_duration(video.get("duration", ""))
+        if duration_s > MAX_DURATION_SECONDS:
+            print(
+                f"[{i}/{total}] Skipping (too long — {video['duration']} > 1h limit): {video['title']}"
+            )
             continue
 
         print(f"[{i}/{total}] Downloading: {video['title']}")
