@@ -17,5 +17,6 @@ data/**
 !data/**/
 !data/**/.gitkeep
 !data/**/*.json
+!data/**/*.md
 
 .claude/
