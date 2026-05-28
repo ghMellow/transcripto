@@ -4,6 +4,20 @@ Format per entry: data · cosa è stato fatto · problemi incontrati · soluzion
 
 ---
 
+## 2026-05-28 — Single YouTube video support
+
+**Done:**
+
+- Added `fetch_video_info(url)` to `yt_downloader.py` — fetches title, channel, duration, upload date via yt-dlp without downloading
+- Added `process_youtube_video()` to `pipeline.py` — mirrors channel flow for a single video
+- `--youtube` flag now auto-detects video vs channel by checking for `watch?v=` / `youtu.be/` in the URL
+
+**Lesson learned:**
+
+- No new flag needed — URL pattern is an unambiguous discriminator, keeps the CLI surface minimal
+
+---
+
 ## 2026-05-27 — Aggiunto --batch-transcribe per cartella audio locale
 
 **Done:**

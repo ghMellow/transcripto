@@ -3,61 +3,60 @@
 ## Setup (once)
 
 ```bash
+brew install ffmpeg
 poetry install
-./build.sh          # compile Swift binary (requires Xcode CLI tools)
 ```
 
 ---
 
 ## Commands
 
-### Single file — full pipeline (extract + transcribe → markdown)
 ```bash
-poetry run transcripto input/lecture.mp4
-poetry run transcripto input/recording.m4a   # audio input skips extraction
-```
-Output: `output/<stem>.md`
+# local: single file
+poetry run transcripto --name NAME PATH
 
-### Single file — extract audio only
-```bash
-poetry run transcripto --extract-only input/lecture.mp4
-```
-Output: `output/<stem>.m4a`
+# local: folder (batch)
+poetry run transcripto --name NAME PATH/TO/FOLDER/
 
-### Folder — batch extract all videos to audio
-```bash
-poetry run transcripto --batch-extract /path/to/folder/
-```
-- Converts every `.mp4 .mov .avi .mkv .webm .m4v` found in the folder
-- Saves `<same-name>.m4a` next to each source video
-- Skips videos that already have a `.m4a` alongside them (safe to re-run)
+# local: watch folder for new files
+poetry run transcripto --name NAME --watch PATH/TO/FOLDER/
 
-### Watch mode — auto-process anything dropped in `input/`
-```bash
-poetry run transcripto --watch
-```
+# youtube: single video
+poetry run transcripto --youtube URL
 
-### Language (default: Italian)
-```bash
-poetry run transcripto input/lecture.mp4 --lang en-US
-poetry run transcripto --batch-extract /folder/ --lang en-US   # N/A for extract-only
+# youtube: full channel
+poetry run transcripto --youtube URL
+
+# youtube: check for new videos and download up to N
+poetry run transcripto --youtube URL --refresh --limit N
+
+# transcribe already-downloaded audio folder
+poetry run transcripto --batch-transcribe data/NAME/audio/
 ```
 
 ---
 
-## Notes
+## Options
 
-- Transcription is currently blocked on macOS 26 (TCC issue — see `BLOCKERS.md`)
-- Extraction via VLC works fine regardless
-- VLC must be installed at `/Applications/VLC.app`
-
+| Option | Description |
+| --- | --- |
+| `--name NAME` | Project name — output goes to `data/NAME/transcription/` |
+| `--lang CODE` | Language code (`it`, `en`, …). Omit to auto-detect |
+| `--watch` | Watch folder for new files, transcribe on arrival |
+| `--youtube URL` | Single video URL (`watch?v=`) or channel URL (`@Handle`) |
+| `--refresh` | Fetch the 50 most recent channel videos and merge new ones into cache |
+| `--limit N` | Process at most N pending videos, most recent first |
+| `--keep-audio` | Keep `.m4a` after transcription (default: deleted to save space) |
+| `--batch-transcribe DIR` | Transcribe all audio files in DIR, skip already-done |
+| `--out-dir DIR` | Output dir for `--batch-transcribe` (default: `../transcription/`) |
 
 ---
 
-## Example
+## Output
 
-```
-poetry run transcripto --youtube https://www.youtube.com/@IBMTechnology
+All transcriptions are saved as markdown with YAML frontmatter:
 
-poetry run transcripto --youtube https://www.youtube.com/@IBMTechnology --lang en --refresh
+```text
+data/<name>/transcription/<title>.md     # local files
+data/<channel>/transcription/<title>.md  # YouTube
 ```

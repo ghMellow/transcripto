@@ -26,6 +26,33 @@ def _audio_path(video: dict, output_dir: Path) -> Path:
     return output_dir / f"{video['id']}.m4a"
 
 
+def fetch_video_info(url: str) -> dict:
+    """Fetch metadata for a single YouTube video URL. Returns a video dict."""
+    import yt_dlp
+
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    duration_s = info.get("duration") or 0
+    h, rem = divmod(int(duration_s), 3600)
+    m, s = divmod(rem, 60)
+    duration = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+    return {
+        "id": info["id"],
+        "title": info.get("title", info["id"]),
+        "url": url,
+        "channel": info.get("uploader") or info.get("channel", ""),
+        "date_uploaded": info.get("upload_date", ""),
+        "duration": duration,
+    }
+
+
 def download_audio(video: dict, output_dir: Path) -> Path:
     """Download a single video's audio as .m4a. Returns the output path."""
     import yt_dlp  # local import keeps startup fast when YouTube is not used
@@ -36,13 +63,19 @@ def download_audio(video: dict, output_dir: Path) -> Path:
     if out_path.exists():
         return out_path
 
+    def _on_progress(d: dict) -> None:
+        if d["status"] == "finished":
+            print(f"  Download complete: {d['filename']}")
+
     opts = {
         "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
         "format": "bestaudio[ext=m4a]/bestaudio/best",
         "outtmpl": str(output_dir / "%(id)s.%(ext)s"),
         "socket_timeout": _SOCKET_TIMEOUT,
         "retries": 3,
-        "js_runtimes": ["node"],  # suppress "no JS runtime" warning; node is available via brew
+        "progress_hooks": [_on_progress],
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
@@ -50,6 +83,7 @@ def download_audio(video: dict, output_dir: Path) -> Path:
             }
         ],
     }
+    print(f"  Downloading audio ...")
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([video["url"]])
 

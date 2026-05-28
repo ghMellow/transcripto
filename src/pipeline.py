@@ -16,6 +16,9 @@ Usage:
     # youtube: download + transcribe a full channel
     poetry run transcripto --youtube https://www.youtube.com/@Channel [--lang en] [--refresh]
 
+    # youtube: single video
+    poetry run transcripto --youtube https://www.youtube.com/watch?v=VIDEO_ID [--lang en]
+
     # batch-transcribe: transcribe already-downloaded audio in a folder
     poetry run transcripto --batch-transcribe data/IBMTechnology/audio/ [--lang en]
 """
@@ -33,7 +36,7 @@ from .extract import extract_audio, is_audio, AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
 from .transcriber import transcribe, DEFAULT_LANGUAGE
 from .metadata import extract_metadata
 from .yt_scraper import list_channel_videos
-from .yt_downloader import batch_download
+from .yt_downloader import batch_download, fetch_video_info, download_audio as yt_download_audio
 
 REPO_ROOT = Path(__file__).parent.parent
 DATA_DIR = REPO_ROOT / "data"
@@ -83,6 +86,7 @@ def _build_yt_frontmatter(video: dict) -> str:
     lines = [
         "---",
         f"title: {_q(video['title'])}",
+        f"id: {video['id']}",
         f"source: {video['url']}",
         f"channel: {video['channel']}",
         f"date_uploaded: {date}",
@@ -179,7 +183,7 @@ def process_folder(folder: Path, name: str, lang: str, keep_audio: bool = False)
 # ---------------------------------------------------------------------------
 
 def process_youtube_channel(
-    channel_url: str, lang: str, refresh: bool = False, keep_audio: bool = False
+    channel_url: str, lang: str, refresh: bool = False, keep_audio: bool = False, limit: int | None = None
 ) -> None:
     """Download and transcribe all videos from a YouTube channel.
 
@@ -207,6 +211,12 @@ def process_youtube_channel(
         print("All videos already transcribed.")
         return
 
+    # Most recent first — date_uploaded is YYYYMMDD, lexicographic sort works
+    pending.sort(key=lambda v: v.get("date_uploaded", ""), reverse=True)
+    if limit is not None:
+        pending = pending[:limit]
+        print(f"Limit: processing {len(pending)} video(s).")
+
     audio_paths = batch_download(pending, audio_dir)
     total = len(pending)
 
@@ -233,6 +243,50 @@ def process_youtube_channel(
 
         if not keep_audio:
             audio_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# YouTube single video processing
+# ---------------------------------------------------------------------------
+
+def process_youtube_video(video_url: str, lang: str, keep_audio: bool = False) -> None:
+    """Download and transcribe a single YouTube video.
+
+    Audio  → data/<channel>/audio/   (deleted after transcription unless keep_audio=True)
+    Output → data/<channel>/transcription/
+    """
+    print(f"Fetching video info: {video_url}")
+    video = fetch_video_info(video_url)
+    print(f"Title:   {video['title']}")
+    print(f"Channel: {video['channel']}")
+
+    slug = re.sub(r"[^\w\-]", "", video["channel"]) or "youtube"
+    audio_dir = DATA_DIR / slug / "audio"
+    t_dir = DATA_DIR / slug / "transcription"
+    t_dir.mkdir(parents=True, exist_ok=True)
+
+    md_path = t_dir / f"{_safe_stem(video['title'])}.md"
+    if md_path.exists():
+        print(f"Skip (exists): {md_path.name}")
+        return
+
+    audio_path = yt_download_audio(video, audio_dir)
+    if not audio_path.exists():
+        print("Error: download failed.", file=sys.stderr)
+        return
+
+    print(f"Transcribing: {video['title']} [{lang}]")
+    text = transcribe(str(audio_path), lang)
+
+    frontmatter = _build_yt_frontmatter(video)
+    md_path.write_text(
+        f"{frontmatter}\n\n# {video['title']}\n\n{text}\n",
+        encoding="utf-8",
+    )
+    print(f"Saved: {md_path}")
+
+    if not keep_audio:
+        audio_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +421,9 @@ Examples:
   # youtube channel (name auto-derived from channel)
   transcripto --youtube https://www.youtube.com/@IBMTechnology --lang en
 
+  # youtube single video
+  transcripto --youtube https://www.youtube.com/watch?v=dQw4w9WgXcQ --lang en
+
   # transcribe already-downloaded audio
   transcripto --batch-transcribe data/IBMTechnology/audio/ --lang en
 """,
@@ -381,7 +438,7 @@ Examples:
     )
     parser.add_argument(
         "--lang", default=DEFAULT_LANGUAGE,
-        help=f"Language code (default: {DEFAULT_LANGUAGE})",
+        help="Language code (e.g. it, en). Omit to let Whisper auto-detect.",
     )
     parser.add_argument(
         "--watch", action="store_true",
@@ -407,11 +464,19 @@ Examples:
         "--keep-audio", action="store_true",
         help="Keep audio files after transcription (default: delete to save space)",
     )
+    parser.add_argument(
+        "--limit", type=int, metavar="N",
+        help="Process at most N pending videos, most recent first (YouTube channel mode only)",
+    )
     args = parser.parse_args()
 
-    # --- YouTube mode ---
+    # --- YouTube mode (auto-detect single video vs channel) ---
     if args.youtube:
-        process_youtube_channel(args.youtube, args.lang, refresh=args.refresh, keep_audio=args.keep_audio)
+        url = args.youtube
+        if "watch?v=" in url or "youtu.be/" in url:
+            process_youtube_video(url, args.lang, keep_audio=args.keep_audio)
+        else:
+            process_youtube_channel(url, args.lang, refresh=args.refresh, keep_audio=args.keep_audio, limit=args.limit)
         return
 
     # --- Batch-transcribe mode (already-downloaded audio) ---

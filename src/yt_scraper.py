@@ -6,8 +6,8 @@ from urllib.parse import urlparse
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 
-
 _YT_NOISE_SEGMENTS = {"videos", "shorts", "streams", "playlists", "community", "about", "featured"}
+_INCREMENTAL_FETCH = 50  # videos fetched on --refresh to catch new uploads
 
 
 def channel_slug(channel_url: str) -> str:
@@ -28,14 +28,18 @@ def _cache_path(slug: str) -> Path:
     return DATA_DIR / slug / "video_list.json"
 
 
-def _fetch_channel_videos(channel_url: str) -> list[dict]:
+def _fetch_channel_videos(channel_url: str, max_entries: int | None = None) -> list[dict]:
     import yt_dlp  # local import keeps startup fast when YouTube is not used
 
     opts = {
         "quiet": True,
+        "no_warnings": True,
         "extract_flat": True,
         "skip_download": True,
     }
+    if max_entries is not None:
+        opts["playlistend"] = max_entries
+
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(channel_url, download=False)
 
@@ -60,8 +64,19 @@ def _fetch_channel_videos(channel_url: str) -> list[dict]:
     return videos
 
 
+def _sort_by_date(videos: list[dict]) -> list[dict]:
+    # Relies on yt-dlp populating upload_date (YYYYMMDD) for every entry.
+    # If YouTube stops exposing this field, videos with empty date_uploaded sort last.
+    return sorted(videos, key=lambda v: v.get("date_uploaded", ""), reverse=True)
+
+
 def list_channel_videos(channel_url: str, refresh: bool = False) -> tuple[list[dict], str]:
-    """Return (videos, slug) for a channel, reading from per-channel cache unless refresh=True."""
+    """Return (videos, slug) for a channel, reading from per-channel cache unless refresh=True.
+
+    With refresh=True and an existing cache, only the most recent _INCREMENTAL_FETCH videos
+    are fetched and merged in — new IDs are prepended, existing ones are untouched.
+    On first run (no cache) the full playlist is fetched regardless of refresh.
+    """
     slug = channel_slug(channel_url)
     cache = _cache_path(slug)
     cache.parent.mkdir(parents=True, exist_ok=True)
@@ -72,8 +87,28 @@ def list_channel_videos(channel_url: str, refresh: bool = False) -> tuple[list[d
         print(f"Loaded {len(videos)} videos from cache ({cache})")
         return videos, slug
 
-    print(f"Fetching video list from: {channel_url}")
-    videos = _fetch_channel_videos(channel_url)
+    if refresh and cache.exists():
+        print(f"Checking for new videos (last {_INCREMENTAL_FETCH}) on: {channel_url}")
+        recent = _fetch_channel_videos(channel_url, max_entries=_INCREMENTAL_FETCH)
+        cached = json.loads(cache.read_text(encoding="utf-8"))
+        existing = cached.get("videos", [])
+        existing_ids = {v["id"] for v in existing}
+        added = [v for v in recent if v["id"] not in existing_ids]
+        if added:
+            print(f"  {len(added)} new video(s) added to cache.")
+            all_videos = _sort_by_date(added + existing)
+        else:
+            print("  No new videos found.")
+            all_videos = existing
+        cache.write_text(
+            json.dumps({"channel_url": channel_url, "videos": all_videos}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return all_videos, slug
+
+    # First run — fetch full playlist
+    print(f"Fetching full video list from: {channel_url}")
+    videos = _sort_by_date(_fetch_channel_videos(channel_url))
     cache.write_text(
         json.dumps({"channel_url": channel_url, "videos": videos}, indent=2, ensure_ascii=False),
         encoding="utf-8",

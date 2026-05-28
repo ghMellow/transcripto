@@ -5,9 +5,15 @@ from pathlib import Path
 
 import mlx_whisper
 
+try:
+    from huggingface_hub.utils import disable_progress_bars
+    disable_progress_bars()
+except Exception:
+    pass
+
 WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
 # WHISPER_MODEL = "mlx-community/whisper-base"  # dev/test: faster, lower quality
-DEFAULT_LANGUAGE = "it"
+DEFAULT_LANGUAGE = None  # None = Whisper auto-detects from first 30s of audio
 
 
 def _preprocess(input_path: str, output_path: str) -> str:
@@ -36,6 +42,7 @@ def transcribe(audio_path: str, language: str = DEFAULT_LANGUAGE) -> str:
             wav_path,
             path_or_hf_repo=WHISPER_MODEL,
             language=language,
+            verbose=False,
         )
     finally:
         Path(wav_path).unlink(missing_ok=True)
