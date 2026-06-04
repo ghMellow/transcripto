@@ -36,7 +36,13 @@ from .extract import extract_audio, is_audio, AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
 from .transcriber import transcribe, DEFAULT_LANGUAGE
 from .metadata import extract_metadata
 from .yt_scraper import list_channel_videos
-from .yt_downloader import batch_download, fetch_video_info, download_audio as yt_download_audio
+from .yt_downloader import (
+    batch_download,
+    fetch_video_info,
+    download_audio as yt_download_audio,
+    list_video_formats,
+    download_video,
+)
 
 REPO_ROOT = Path(__file__).parent.parent
 DATA_DIR = REPO_ROOT / "data"
@@ -290,6 +296,106 @@ def process_youtube_video(video_url: str, lang: str, keep_audio: bool = False) -
 
 
 # ---------------------------------------------------------------------------
+# YouTube single video DOWNLOAD (interactive quality selection)
+# ---------------------------------------------------------------------------
+
+def _format_size(num_bytes: int) -> str:
+    """Human-readable size estimate, or '?' when unknown."""
+    if not num_bytes:
+        return "? MB"
+    mb = num_bytes / 1_000_000
+    return f"{mb / 1000:.2f} GB" if mb >= 1000 else f"{mb:.0f} MB"
+
+
+def _select_video_quality(video: dict, options: list[dict]) -> int | None:
+    """Print available qualities and prompt for a choice on the CLI.
+
+    Returns the chosen max height in pixels, or None if the user cancels.
+    """
+    print(f'\nAvailable video qualities for "{video["title"]}":')
+    for idx, opt in enumerate(options, 1):
+        fps = f"{opt['fps']:.0f}fps" if opt.get("fps") else ""
+        print(
+            f"  [{idx}]  {opt['height']:>4}p {fps:>6}  "
+            f"{opt['vcodec']:<5}  .{opt['ext']:<4}  ~{_format_size(opt['filesize'])}"
+        )
+    print("  [0]  Cancel")
+
+    while True:
+        choice = input(f"Select quality [0-{len(options)}]: ").strip()
+        if choice == "0":
+            return None
+        if choice.isdigit() and 1 <= int(choice) <= len(options):
+            return options[int(choice) - 1]["height"]
+        print("Invalid choice, try again.")
+
+
+def process_youtube_video_download(
+    video_url: str, lang: str, max_height: int | None = None, transcribe_after: bool = False
+) -> None:
+    """Download a single YouTube video (interactive quality). Transcription is opt-in.
+
+    Video → data/<channel>/video/   (kept on disk)
+
+    With transcribe_after=True, audio is extracted from the downloaded video,
+    transcribed to data/<channel>/transcription/, then the temp audio is deleted;
+    no separate audio stream is downloaded. If max_height is given, the interactive
+    menu is skipped and the best stream up to that height is downloaded.
+    """
+    print(f"Fetching video info: {video_url}")
+    video, options = list_video_formats(video_url)
+    print(f"Title:   {video['title']}")
+    print(f"Channel: {video['channel']}")
+
+    if not options:
+        print("Error: no downloadable video formats found.", file=sys.stderr)
+        return
+
+    if max_height is None:
+        max_height = _select_video_quality(video, options)
+        if max_height is None:
+            print("Cancelled — nothing downloaded.")
+            return
+
+    slug = re.sub(r"[^\w\-]", "", video["channel"]) or "youtube"
+    video_dir = DATA_DIR / slug / "video"
+    video_path = download_video(video, video_dir, max_height)
+    if not video_path.exists():
+        print("Error: download failed.", file=sys.stderr)
+        return
+    print(f"Saved video: {video_path}")
+
+    if not transcribe_after:
+        return  # video-only — transcription must be requested explicitly with --transcribe
+
+    t_dir = DATA_DIR / slug / "transcription"
+    t_dir.mkdir(parents=True, exist_ok=True)
+    md_path = t_dir / f"{_safe_stem(video['title'])}.md"
+    if md_path.exists():
+        print(f"Transcription exists: {md_path.name}")
+        return
+
+    # Extract audio from the downloaded video — only a means to transcribe.
+    audio_dir = DATA_DIR / slug / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    audio_tmp = audio_dir / f"{video['id']}.m4a"
+    if not audio_tmp.exists():
+        extract_audio(video_path, audio_tmp)
+
+    print(f"Transcribing: {video['title']} [{lang}]")
+    text = transcribe(str(audio_tmp), lang)
+
+    frontmatter = _build_yt_frontmatter(video)
+    md_path.write_text(
+        f"{frontmatter}\n\n# {video['title']}\n\n{text}\n",
+        encoding="utf-8",
+    )
+    print(f"Saved: {md_path}")
+
+    audio_tmp.unlink(missing_ok=True)  # keep the video, drop the throwaway audio
+
+
+# ---------------------------------------------------------------------------
 # Batch-transcribe: already-downloaded audio folder (resume-safe)
 # ---------------------------------------------------------------------------
 
@@ -453,6 +559,18 @@ Examples:
         help="Force re-fetch of YouTube channel video list (ignores cache)",
     )
     parser.add_argument(
+        "--video", action="store_true",
+        help="Action (single YouTube video only): download the video file, with a quality menu",
+    )
+    parser.add_argument(
+        "--quality", type=int, metavar="HEIGHT",
+        help="Max video height in px (e.g. 1080) — skips the --video quality menu",
+    )
+    parser.add_argument(
+        "--transcribe", action="store_true",
+        help="Action: transcribe the video (uses --lang for the language). Combine with --video for both. Automatic for channel links",
+    )
+    parser.add_argument(
         "--batch-transcribe", metavar="AUDIO_DIR",
         help="Transcribe all audio files in AUDIO_DIR (skips already done)",
     )
@@ -470,13 +588,31 @@ Examples:
     )
     args = parser.parse_args()
 
-    # --- YouTube mode (auto-detect single video vs channel) ---
+    # --- YouTube mode ---
+    # --youtube is just the source link; explicit actions say what to do:
+    #   --transcribe → produce a transcription   --video → download the video file
+    # Single video: at least one action required.
+    # Channel link: batch transcription is the only possible action (automatic);
+    #               --video errors out (no per-video quality choice in batch).
     if args.youtube:
         url = args.youtube
-        if "watch?v=" in url or "youtu.be/" in url:
-            process_youtube_video(url, args.lang, keep_audio=args.keep_audio)
-        else:
+        is_single = "watch?v=" in url or "youtu.be/" in url
+
+        if not is_single:
+            if args.video:
+                parser.error("--video works on a single video only; a channel link does batch transcription")
             process_youtube_channel(url, args.lang, refresh=args.refresh, keep_audio=args.keep_audio, limit=args.limit)
+            return
+
+        # single video
+        if not args.video and not args.transcribe:
+            parser.error("choose an action for the video: --transcribe and/or --video")
+        if args.video:
+            process_youtube_video_download(
+                url, args.lang, max_height=args.quality, transcribe_after=args.transcribe
+            )
+        else:  # --transcribe only → audio path, no video file kept
+            process_youtube_video(url, args.lang, keep_audio=args.keep_audio)
         return
 
     # --- Batch-transcribe mode (already-downloaded audio) ---

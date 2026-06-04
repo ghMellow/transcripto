@@ -8,6 +8,10 @@ _DELAY_BETWEEN_DOWNLOADS = 2  # seconds — avoids YouTube throttling
 _SOCKET_TIMEOUT = 60           # seconds — abort stalled connections
 MAX_DURATION_SECONDS = 3600    # skip videos longer than 1 hour
 
+# Containers a merged video file may end up in (native, no re-encode).
+# mp4 when streams are mp4-compatible, otherwise mkv/webm for VP9/AV1.
+_VIDEO_OUTPUT_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
+
 
 def _parse_duration(duration_str: str) -> int:
     """Parse HH:MM:SS or MM:SS string into total seconds. Returns 0 on parse error."""
@@ -26,18 +30,8 @@ def _audio_path(video: dict, output_dir: Path) -> Path:
     return output_dir / f"{video['id']}.m4a"
 
 
-def fetch_video_info(url: str) -> dict:
-    """Fetch metadata for a single YouTube video URL. Returns a video dict."""
-    import yt_dlp
-
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-
+def _build_video_dict(info: dict, url: str) -> dict:
+    """Build the canonical video metadata dict from a yt-dlp info object."""
     duration_s = info.get("duration") or 0
     h, rem = divmod(int(duration_s), 3600)
     m, s = divmod(rem, 60)
@@ -51,6 +45,72 @@ def fetch_video_info(url: str) -> dict:
         "date_uploaded": info.get("upload_date", ""),
         "duration": duration,
     }
+
+
+def fetch_video_info(url: str) -> dict:
+    """Fetch metadata for a single YouTube video URL. Returns a video dict."""
+    import yt_dlp
+
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    return _build_video_dict(info, url)
+
+
+def list_video_formats(url: str) -> tuple[dict, list[dict]]:
+    """Probe a YouTube video's available video qualities without downloading.
+
+    Returns (video_dict, options) where options is a list of one entry per
+    distinct resolution (highest first), each:
+        {"height": int, "ext": str, "vcodec": str, "fps": float|None, "filesize": int}
+    `filesize` is the estimated final size (video stream + best audio stream).
+    """
+    import yt_dlp
+
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    video = _build_video_dict(info, url)
+    formats = info.get("formats", [])
+
+    # Best (largest) audio-only stream — added to each estimate since high-res
+    # video streams are video-only on YouTube (DASH).
+    audio_size = 0
+    for f in formats:
+        if f.get("acodec") not in (None, "none") and f.get("vcodec") in (None, "none"):
+            audio_size = max(audio_size, f.get("filesize") or f.get("filesize_approx") or 0)
+
+    # Keep the best format per resolution height: prefer mp4/H.264, then bitrate.
+    best_by_height: dict[int, dict] = {}
+    for f in formats:
+        if f.get("vcodec") in (None, "none"):
+            continue
+        height = f.get("height")
+        if not height:
+            continue
+        size = f.get("filesize") or f.get("filesize_approx") or 0
+        score = (1 if f.get("ext") == "mp4" else 0, f.get("tbr") or 0)
+        current = best_by_height.get(height)
+        if current is None or score > current["_score"]:
+            best_by_height[height] = {
+                "height": height,
+                "ext": f.get("ext") or "mp4",
+                "vcodec": (f.get("vcodec") or "").split(".")[0],
+                "fps": f.get("fps"),
+                "filesize": (size + audio_size) if size else 0,
+                "_score": score,
+            }
+
+    options = [best_by_height[h] for h in sorted(best_by_height, reverse=True)]
+    for opt in options:
+        opt.pop("_score", None)
+    return video, options
 
 
 def download_audio(video: dict, output_dir: Path) -> Path:
@@ -88,6 +148,51 @@ def download_audio(video: dict, output_dir: Path) -> Path:
         ydl.download([video["url"]])
 
     return out_path
+
+
+def download_video(video: dict, output_dir: Path, max_height: int) -> Path:
+    """Download a single video up to max_height (px), merging best audio.
+
+    Native container, no re-encode: mp4 when streams are mp4-compatible,
+    otherwise mkv/webm (VP9/AV1). Returns the path to the merged file.
+    Skip-if-exists by video id.
+    """
+    import yt_dlp
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    existing = [p for p in output_dir.glob(f"{video['id']}.*") if p.suffix.lower() in _VIDEO_OUTPUT_EXTS]
+    if existing:
+        return existing[0]
+
+    # Prefer mp4/m4a so common resolutions stay mp4; fall back to whatever the
+    # video offers (webm/VP9/AV1) at high resolutions — no re-encode either way.
+    fmt = (
+        f"bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/"
+        f"bestvideo[height<={max_height}]+bestaudio/"
+        f"best[height<={max_height}]"
+    )
+
+    def _on_progress(d: dict) -> None:
+        if d["status"] == "finished":
+            print(f"  Stream complete: {Path(d['filename']).name}")
+
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "format": fmt,
+        "outtmpl": str(output_dir / "%(id)s.%(ext)s"),
+        "socket_timeout": _SOCKET_TIMEOUT,
+        "retries": 3,
+        "progress_hooks": [_on_progress],
+    }
+    print(f"  Downloading video (up to {max_height}p) ...")
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([video["url"]])
+
+    merged = [p for p in output_dir.glob(f"{video['id']}.*") if p.suffix.lower() in _VIDEO_OUTPUT_EXTS]
+    return merged[0] if merged else output_dir / f"{video['id']}.mp4"
 
 
 def batch_download(videos: list[dict], output_dir: Path) -> list[Path]:

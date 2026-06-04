@@ -21,6 +21,7 @@ transcripto/
 ├── data/                    # all project data (gitignored)
 │   └── <name>/              # one folder per project or channel
 │       ├── audio/           # extracted or downloaded audio (.m4a)
+│       ├── video/           # downloaded YouTube video (--video mode only)
 │       ├── transcription/   # markdown output
 │       └── video_list.json  # YouTube metadata cache (YouTube mode only)
 ├── src/
@@ -68,8 +69,14 @@ poetry run transcripto --name Fisica /Volumes/HDD/lezioni/
 # 4. local: watch a folder, auto-transcribes new files as they arrive
 poetry run transcripto --name Fisica --watch /path/to/folder/
 
-# 5. youtube: download + transcribe a full channel (name auto-derived)
+# 5. youtube: --youtube is just the source link; explicit actions say what to do.
+#    Channel link → batch transcription is automatic (only possible action):
 poetry run transcripto --youtube https://www.youtube.com/@IBMTechnology --lang en
+
+# 5b. single video — pick action(s): --transcribe, --video, or both
+poetry run transcripto --youtube "https://www.youtube.com/watch?v=VIDEO_ID" --transcribe --lang en
+poetry run transcripto --youtube "https://www.youtube.com/watch?v=VIDEO_ID" --video             # video file only (quality menu)
+poetry run transcripto --youtube "https://www.youtube.com/watch?v=VIDEO_ID" --video --transcribe --quality 1080 --lang en  # both
 
 # 6. batch-transcribe: transcribe already-downloaded audio (resume-safe)
 poetry run transcripto --batch-transcribe data/IBMTechnology/audio/ --lang en
@@ -190,6 +197,13 @@ Falls back gracefully if tags are missing (uses filename stem as title).
 - Skip-if-exists (resume-safe)
 - 2s delay between downloads to avoid YouTube throttling
 - `socket_timeout=60`, `retries=3` to handle CDN drops (not rate limits)
+- `list_video_formats(url)` — probes a single video's available resolutions
+  without downloading (one entry per height, best codec/bitrate kept; size
+  estimate = video stream + best audio stream). Used by the `--video` quality menu.
+- `download_video(video, dir, max_height)` — downloads `bestvideo[height<=N]+bestaudio`,
+  merged by ffmpeg. **Native container, no re-encode**: `.mp4` when streams are
+  mp4-compatible, otherwise `.mkv`/`.webm` for VP9/AV1 (all readable by VLC).
+  Single video only — no channel batch (large files, no per-video choice in batch).
 
 ### `src/pipeline.py`
 
@@ -197,7 +211,16 @@ CLI entrypoint, registered as `transcripto` via Poetry scripts. Orchestrates:
 
 - `--name NAME path` — local single file or folder, any path on disk
 - `--name NAME --watch path` — FSEvents-based watch mode (zero CPU at rest)
-- `--youtube URL` — full YouTube channel pipeline (scrape → download → transcribe)
+- `--youtube URL` — source link only; explicit action flags decide what happens:
+  - **channel link** → batch transcription, automatic (the only valid action).
+    `--video` on a channel is an error.
+  - **single video** (`watch?v=` / `youtu.be/`) → requires at least one action:
+    - `--transcribe` → transcribe (audio path; video file not kept)
+    - `--video [--quality N]` → download the video file (interactive quality menu,
+      or `--quality N` to skip it), kept in `data/<name>/video/`
+    - `--video --transcribe` → both; audio is extracted from the downloaded video
+      only as a means to transcribe (with `--lang` for language)
+    - no action flag → error
 - `--batch-transcribe DIR` — transcribe already-downloaded audio folder (resume-safe)
 - All output → `data/<name>/transcription/`; extracted audio → `data/<name>/audio/`
 

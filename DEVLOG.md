@@ -4,6 +4,28 @@ Format per entry: data · cosa è stato fatto · problemi incontrati · soluzion
 
 ---
 
+## 2026-06-04 — Download video YouTube con scelta qualità interattiva
+
+**Done:**
+
+- `--video` su singolo video YouTube: `list_video_formats()` sonda i formati disponibili (senza download), stampa un menu CLI (risoluzione/codec/fps/dimensione stimata), utente sceglie o annulla con `[0]`.
+- `download_video()` scarica `bestvideo[height<=N]+bestaudio` mergiati da ffmpeg, container nativo (no re-encode); `--quality N` salta il menu.
+- Video salvato in `data/<name>/video/`; audio estratto dal video solo per trascrivere, poi cancellato. Solo singolo video, niente batch di canale.
+- **CLI ridisegnata esplicita**: `--youtube` = solo il link, le azioni le decidono i flag. Singolo video: `--transcribe` e/o `--video` (nessuna azione → errore). Canale: trascrizione automatica (unica azione possibile), `--video` su canale → errore. `--transcribe` ora azione esplicita (non più trascrizione implicita per i singoli).
+
+**Problemi:**
+
+- Gli stream video ad alta risoluzione su YouTube sono video-only (DASH): la `filesize` del formato non include l'audio → stima sottodimensionata.
+- 4K/1440p spesso solo VP9/AV1 → file `.webm`/`.mkv`, non `.mp4`.
+
+**Lesson learned:**
+
+- Stima dimensione = filesize video + best audio-only filesize, altrimenti il menu mostra valori fuorvianti.
+- Container nativo (no merge_output_format forzato) = nessun re-encode e VLC legge tutto (VP9 da VLC 2.x, AV1 da 3.x); forzare mp4 costerebbe transcodifica lenta e perdita qualità.
+- Il tetto di qualità lo decide il video caricato, non yt-dlp: `height<=N` filtra ma non può creare risoluzioni inesistenti.
+
+---
+
 ## 2026-05-28 — Single YouTube video support
 
 **Done:**

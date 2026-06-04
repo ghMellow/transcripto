@@ -21,14 +21,28 @@ poetry run transcripto --name NAME PATH/TO/FOLDER/
 # local: watch folder for new files
 poetry run transcripto --name NAME --watch PATH/TO/FOLDER/
 
-# youtube: single video
-poetry run transcripto --youtube URL
+# NOTE: always wrap YouTube URLs in quotes — zsh treats ? and & as special chars
+#   poetry run transcripto --youtube "https://www.youtube.com/watch?v=ID" --video
 
-# youtube: full channel
-poetry run transcripto --youtube URL
+# --youtube is just the link. Add explicit actions: --transcribe and/or --video.
 
-# youtube: check for new videos and download up to N
-poetry run transcripto --youtube URL --refresh --limit N
+# youtube single video: transcribe it
+poetry run transcripto --youtube "URL" --transcribe --lang en
+
+# youtube single video: download the VIDEO file only (interactive quality menu)
+poetry run transcripto --youtube "URL" --video
+
+# youtube single video: download the video AND transcribe it
+poetry run transcripto --youtube "URL" --video --transcribe --lang en
+
+# youtube single video: same, skip the menu (max resolution in px)
+poetry run transcripto --youtube "URL" --video --quality 1080 --transcribe --lang en
+
+# youtube full channel: transcription is automatic (only valid action; --video errors)
+poetry run transcripto --youtube "CHANNEL_URL" --lang en
+
+# youtube channel: check for new videos and download up to N
+poetry run transcripto --youtube "CHANNEL_URL" --refresh --limit N
 
 # transcribe already-downloaded audio folder
 poetry run transcripto --batch-transcribe data/NAME/audio/
@@ -43,7 +57,10 @@ poetry run transcripto --batch-transcribe data/NAME/audio/
 | `--name NAME` | Project name — output goes to `data/NAME/transcription/` |
 | `--lang CODE` | Language code (`it`, `en`, …). Omit to auto-detect |
 | `--watch` | Watch folder for new files, transcribe on arrival |
-| `--youtube URL` | Single video URL (`watch?v=`) or channel URL (`@Handle`) |
+| `--youtube URL` | Source link only — single video (`watch?v=`) or channel (`@Handle`). Add action flags below |
+| `--transcribe` | Action: transcribe. Required for a single video (alone or with `--video`); automatic for channels |
+| `--video` | Action (single video only): download the video file (quality menu) → `data/<channel>/video/`. Errors on a channel link |
+| `--quality HEIGHT` | Max video height in px (e.g. `1080`) — skips the `--video` quality menu |
 | `--refresh` | Fetch the 50 most recent channel videos and merge new ones into cache |
 | `--limit N` | Process at most N pending videos, most recent first |
 | `--keep-audio` | Keep `.m4a` after transcription (default: deleted to save space) |
