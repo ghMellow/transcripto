@@ -359,7 +359,7 @@ def process_youtube_video_download(
 
     slug = re.sub(r"[^\w\-]", "", video["channel"]) or "youtube"
     video_dir = DATA_DIR / slug / "video"
-    video_path = download_video(video, video_dir, max_height)
+    video_path = download_video(video, video_dir, max_height, _safe_stem(video["title"]))
     if not video_path.exists():
         print("Error: download failed.", file=sys.stderr)
         return

@@ -1,5 +1,6 @@
 """YouTube audio downloader — batch downloads .m4a via yt-dlp, skip-if-exists, rate-limited."""
 
+import glob
 import sys
 import time
 from pathlib import Path
@@ -11,6 +12,42 @@ MAX_DURATION_SECONDS = 3600    # skip videos longer than 1 hour
 # Containers a merged video file may end up in (native, no re-encode).
 # mp4 when streams are mp4-compatible, otherwise mkv/webm for VP9/AV1.
 _VIDEO_OUTPUT_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
+
+_BAR_WIDTH = 30
+_SPIN_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+
+def _make_progress_hook():
+    """Build a yt-dlp progress_hook that draws a live bar (or spinner if size unknown).
+
+    A fresh hook is created per download so the spinner state is isolated. YouTube
+    DASH streams download video then audio separately, so two bars may appear in
+    sequence, each ending with a 'Stream complete' line.
+    """
+    state = {"spin": 0}
+
+    def hook(d: dict) -> None:
+        status = d.get("status")
+        if status == "downloading":
+            done = d.get("downloaded_bytes", 0)
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            speed = d.get("speed") or 0
+            spd = f"{speed / 1_000_000:5.1f} MB/s" if speed else "   --    "
+            if total:
+                pct = min(done / total * 100, 100)
+                filled = int(pct / 100 * _BAR_WIDTH)
+                bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
+                print(f"\r  [{bar}] {pct:5.1f}%  {spd}", end="", flush=True)
+            else:
+                frame = _SPIN_FRAMES[state["spin"] % len(_SPIN_FRAMES)]
+                state["spin"] += 1
+                print(f"\r  {frame} downloading {done / 1_000_000:7.1f} MB  {spd}", end="", flush=True)
+        elif status == "finished":
+            name = Path(d.get("filename", "")).name
+            # overwrite the bar line, then newline
+            print(f"\r  Stream complete: {name}".ljust(_BAR_WIDTH + 24), flush=True)
+
+    return hook
 
 
 def _parse_duration(duration_str: str) -> int:
@@ -123,10 +160,6 @@ def download_audio(video: dict, output_dir: Path) -> Path:
     if out_path.exists():
         return out_path
 
-    def _on_progress(d: dict) -> None:
-        if d["status"] == "finished":
-            print(f"  Download complete: {d['filename']}")
-
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -135,7 +168,7 @@ def download_audio(video: dict, output_dir: Path) -> Path:
         "outtmpl": str(output_dir / "%(id)s.%(ext)s"),
         "socket_timeout": _SOCKET_TIMEOUT,
         "retries": 3,
-        "progress_hooks": [_on_progress],
+        "progress_hooks": [_make_progress_hook()],
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
@@ -150,18 +183,22 @@ def download_audio(video: dict, output_dir: Path) -> Path:
     return out_path
 
 
-def download_video(video: dict, output_dir: Path, max_height: int) -> Path:
+def download_video(video: dict, output_dir: Path, max_height: int, stem: str) -> Path:
     """Download a single video up to max_height (px), merging best audio.
 
-    Native container, no re-encode: mp4 when streams are mp4-compatible,
-    otherwise mkv/webm (VP9/AV1). Returns the path to the merged file.
-    Skip-if-exists by video id.
+    The output file is named `<stem>.<ext>` — `stem` must already be filesystem-safe
+    (caller cleans the video title). Native container, no re-encode: mp4 when streams
+    are mp4-compatible, otherwise mkv/webm (VP9/AV1). Skip-if-exists by stem.
+    Returns the path to the merged file.
     """
     import yt_dlp
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    existing = [p for p in output_dir.glob(f"{video['id']}.*") if p.suffix.lower() in _VIDEO_OUTPUT_EXTS]
+    def _final(prefix: str) -> list[Path]:
+        return [p for p in output_dir.glob(f"{prefix}.*") if p.suffix.lower() in _VIDEO_OUTPUT_EXTS]
+
+    existing = _final(glob.escape(stem))
     if existing:
         return existing[0]
 
@@ -173,10 +210,8 @@ def download_video(video: dict, output_dir: Path, max_height: int) -> Path:
         f"best[height<={max_height}]"
     )
 
-    def _on_progress(d: dict) -> None:
-        if d["status"] == "finished":
-            print(f"  Stream complete: {Path(d['filename']).name}")
-
+    # Download under the stable video id, then rename to the clean title. This keeps
+    # yt-dlp's outtmpl free of title characters (% format specs, length limits).
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -185,14 +220,20 @@ def download_video(video: dict, output_dir: Path, max_height: int) -> Path:
         "outtmpl": str(output_dir / "%(id)s.%(ext)s"),
         "socket_timeout": _SOCKET_TIMEOUT,
         "retries": 3,
-        "progress_hooks": [_on_progress],
+        "progress_hooks": [_make_progress_hook()],
     }
     print(f"  Downloading video (up to {max_height}p) ...")
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([video["url"]])
 
-    merged = [p for p in output_dir.glob(f"{video['id']}.*") if p.suffix.lower() in _VIDEO_OUTPUT_EXTS]
-    return merged[0] if merged else output_dir / f"{video['id']}.mp4"
+    downloaded = _final(glob.escape(video["id"]))
+    if not downloaded:
+        return output_dir / f"{stem}.mp4"
+
+    src = downloaded[0]
+    dst = src.with_name(f"{stem}{src.suffix}")
+    src.rename(dst)
+    return dst
 
 
 def batch_download(videos: list[dict], output_dir: Path) -> list[Path]:

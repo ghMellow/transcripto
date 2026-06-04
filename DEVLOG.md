@@ -12,6 +12,8 @@ Format per entry: data · cosa è stato fatto · problemi incontrati · soluzion
 - `download_video()` scarica `bestvideo[height<=N]+bestaudio` mergiati da ffmpeg, container nativo (no re-encode); `--quality N` salta il menu.
 - Video salvato in `data/<name>/video/`; audio estratto dal video solo per trascrivere, poi cancellato. Solo singolo video, niente batch di canale.
 - **CLI ridisegnata esplicita**: `--youtube` = solo il link, le azioni le decidono i flag. Singolo video: `--transcribe` e/o `--video` (nessuna azione → errore). Canale: trascrizione automatica (unica azione possibile), `--video` su canale → errore. `--transcribe` ora azione esplicita (non più trascrizione implicita per i singoli).
+- File video salvato col **titolo pulito** (`_safe_stem`, stesso nome del `.md`) invece dell'id: scaricato sotto l'id poi rinominato, così l'`outtmpl` di yt-dlp resta privo di caratteri del titolo.
+- **Feedback di progresso** durante il download: `_make_progress_hook()` (progress_hook yt-dlp) disegna una barra `█░` con % e MB/s, spinner braille come fallback se la size totale è ignota. Usato sia da `download_video` che `download_audio` (prima erano muti tra "Downloading..." e fine). `noprogress:True` sopprime la barra interna di yt-dlp, l'hook fa il rendering nostro.
 
 **Problemi:**
 

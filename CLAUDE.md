@@ -200,10 +200,12 @@ Falls back gracefully if tags are missing (uses filename stem as title).
 - `list_video_formats(url)` — probes a single video's available resolutions
   without downloading (one entry per height, best codec/bitrate kept; size
   estimate = video stream + best audio stream). Used by the `--video` quality menu.
-- `download_video(video, dir, max_height)` — downloads `bestvideo[height<=N]+bestaudio`,
+- `download_video(video, dir, max_height, stem)` — downloads `bestvideo[height<=N]+bestaudio`,
   merged by ffmpeg. **Native container, no re-encode**: `.mp4` when streams are
   mp4-compatible, otherwise `.mkv`/`.webm` for VP9/AV1 (all readable by VLC).
-  Single video only — no channel batch (large files, no per-video choice in batch).
+  Saved as `<stem>.<ext>` where `stem` is the cleaned video title (caller passes
+  `_safe_stem(title)`, same as the `.md` filename) — downloaded under the video id
+  then renamed. Single video only — no channel batch.
 
 ### `src/pipeline.py`
 
