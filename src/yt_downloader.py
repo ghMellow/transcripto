@@ -236,36 +236,51 @@ def download_video(video: dict, output_dir: Path, max_height: int, stem: str) ->
     return dst
 
 
-def batch_download(videos: list[dict], output_dir: Path) -> list[Path]:
-    """Download audio for all videos into output_dir, skipping already-downloaded ones."""
+def iter_audio_downloads(
+    videos: list[dict], output_dir: Path, max_duration_seconds: int | None = None
+):
+    """Yield (video, audio_path) one at a time — skip-if-exists, duration-filtered, rate-limited.
+
+    Downloading lazily (one per yielded item) lets the caller transcribe and
+    delete each file before the next download, instead of filling the disk with
+    every channel video up front. `audio_path` may not exist when a download
+    failed or the video was skipped (too long) — the caller must check.
+    `max_duration_seconds=None` means no length limit.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     total = len(videos)
-    results: list[Path] = []
 
     for i, video in enumerate(videos, 1):
         out_path = _audio_path(video, output_dir)
         if out_path.exists():
-            print(f"[{i}/{total}] Skipping (already downloaded): {video['title']}")
-            results.append(out_path)
+            print(f"[{i}/{total}] Already downloaded: {video['title']}")
+            yield video, out_path
             continue
 
-        duration_s = _parse_duration(video.get("duration", ""))
-        if duration_s > MAX_DURATION_SECONDS:
-            print(
-                f"[{i}/{total}] Skipping (too long — {video['duration']} > 1h limit): {video['title']}"
-            )
-            continue
+        if max_duration_seconds is not None:
+            duration_s = _parse_duration(video.get("duration", ""))
+            if duration_s > max_duration_seconds:
+                limit_min = max_duration_seconds // 60
+                print(
+                    f"[{i}/{total}] Skipping (too long — {video['duration']} > "
+                    f"{limit_min}min limit): {video['title']}"
+                )
+                yield video, out_path  # won't exist — caller skips it
+                continue
 
         print(f"[{i}/{total}] Downloading: {video['title']}")
         try:
             path = download_audio(video, output_dir)
-            results.append(path)
         except Exception as exc:
             print(f"  Warning: download failed, skipping — {exc}", file=sys.stderr)
-            results.append(out_path)  # placeholder (file won't exist; transcriber will skip)
+            yield video, out_path  # placeholder (won't exist)
             continue
 
+        yield video, path
         if i < total:
             time.sleep(_DELAY_BETWEEN_DOWNLOADS)
 
-    return results
+
+def batch_download(videos: list[dict], output_dir: Path) -> list[Path]:
+    """Download audio for all videos into output_dir, skipping already-downloaded ones."""
+    return [path for _, path in iter_audio_downloads(videos, output_dir, MAX_DURATION_SECONDS)]

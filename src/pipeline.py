@@ -37,7 +37,7 @@ from .transcriber import transcribe, DEFAULT_LANGUAGE
 from .metadata import extract_metadata
 from .yt_scraper import list_channel_videos
 from .yt_downloader import (
-    batch_download,
+    iter_audio_downloads,
     fetch_video_info,
     download_audio as yt_download_audio,
     list_video_formats,
@@ -141,9 +141,9 @@ def process_file(input_path: Path, name: str, lang: str, keep_audio: bool = Fals
         audio_path = audio_out
         extracted = True  # we created this — safe to delete after
 
-    print(f"Transcribing: {input_path.name} [{lang}]")
-    text = transcribe(str(audio_path), lang)
     meta = extract_metadata(str(input_path))
+    print(f"Transcribing: {input_path.name} [{lang}]")
+    text = transcribe(str(audio_path), lang, initial_prompt=meta["title"])
 
     frontmatter = _build_frontmatter(meta)
     md_path.write_text(
@@ -189,7 +189,12 @@ def process_folder(folder: Path, name: str, lang: str, keep_audio: bool = False)
 # ---------------------------------------------------------------------------
 
 def process_youtube_channel(
-    channel_url: str, lang: str, refresh: bool = False, keep_audio: bool = False, limit: int | None = None
+    channel_url: str,
+    lang: str,
+    refresh: bool = False,
+    keep_audio: bool = False,
+    limit: int | None = None,
+    max_duration_seconds: int | None = None,
 ) -> None:
     """Download and transcribe all videos from a YouTube channel.
 
@@ -197,6 +202,9 @@ def process_youtube_channel(
     Output → data/<slug>/transcription/
 
     Videos that already have a transcription .md are skipped entirely — no re-download.
+    Downloads are interleaved with transcription (one video at a time) so the disk
+    never holds the whole channel's audio at once. `max_duration_seconds=None` = no
+    length limit; set it to skip very long uploads (e.g. livestreams).
     """
     videos, slug = list_channel_videos(channel_url, refresh=refresh)
     if not videos:
@@ -223,19 +231,19 @@ def process_youtube_channel(
         pending = pending[:limit]
         print(f"Limit: processing {len(pending)} video(s).")
 
-    audio_paths = batch_download(pending, audio_dir)
     total = len(pending)
 
-    for i, (video, audio_path) in enumerate(zip(pending, audio_paths), 1):
-        md_path = t_dir / f"{_safe_stem(video['title'])}.md"
-
+    for i, (video, audio_path) in enumerate(
+        iter_audio_downloads(pending, audio_dir, max_duration_seconds), 1
+    ):
         if not audio_path.exists():
-            print(f"[{i}/{total}] Skip (download failed): {video['title']}")
+            print(f"[{i}/{total}] Skip (no audio): {video['title']}")
             continue
 
+        md_path = t_dir / f"{_safe_stem(video['title'])}.md"
         print(f"[{i}/{total}] Transcribing: {video['title']} [{lang}]")
         try:
-            text = transcribe(str(audio_path), lang)
+            text = transcribe(str(audio_path), lang, initial_prompt=video["title"])
         except Exception as exc:
             print(f"  Error: {exc}", file=sys.stderr)
             continue
@@ -282,7 +290,7 @@ def process_youtube_video(video_url: str, lang: str, keep_audio: bool = False) -
         return
 
     print(f"Transcribing: {video['title']} [{lang}]")
-    text = transcribe(str(audio_path), lang)
+    text = transcribe(str(audio_path), lang, initial_prompt=video["title"])
 
     frontmatter = _build_yt_frontmatter(video)
     md_path.write_text(
@@ -383,7 +391,7 @@ def process_youtube_video_download(
         extract_audio(video_path, audio_tmp)
 
     print(f"Transcribing: {video['title']} [{lang}]")
-    text = transcribe(str(audio_tmp), lang)
+    text = transcribe(str(audio_tmp), lang, initial_prompt=video["title"])
 
     frontmatter = _build_yt_frontmatter(video)
     md_path.write_text(
@@ -439,14 +447,7 @@ def batch_transcribe_local(
             skipped += 1
             continue
 
-        print(f"[{i}/{total}] Transcribing: {stem} [{lang}]")
-        try:
-            text = transcribe(str(audio_path), lang)
-        except Exception as exc:
-            print(f"  Error: {exc}", file=sys.stderr)
-            errors += 1
-            continue
-
+        # Resolve title/frontmatter first so the title can prime transcription.
         video_meta = yt_index.get(stem)
         if video_meta:
             frontmatter = _build_yt_frontmatter(video_meta)
@@ -457,6 +458,14 @@ def batch_transcribe_local(
             frontmatter = _build_frontmatter(meta)
             title = meta["title"]
             # md_path already set above using stem (filename-based for non-YT audio)
+
+        print(f"[{i}/{total}] Transcribing: {stem} [{lang}]")
+        try:
+            text = transcribe(str(audio_path), lang, initial_prompt=title)
+        except Exception as exc:
+            print(f"  Error: {exc}", file=sys.stderr)
+            errors += 1
+            continue
 
         md_path.write_text(
             f"{frontmatter}\n\n# {title}\n\n{text}\n",
@@ -586,6 +595,10 @@ Examples:
         "--limit", type=int, metavar="N",
         help="Process at most N pending videos, most recent first (YouTube channel mode only)",
     )
+    parser.add_argument(
+        "--max-duration", type=int, metavar="MINUTES",
+        help="Skip channel videos longer than MINUTES (YouTube channel mode only; default: no limit)",
+    )
     args = parser.parse_args()
 
     # --- YouTube mode ---
@@ -601,7 +614,11 @@ Examples:
         if not is_single:
             if args.video:
                 parser.error("--video works on a single video only; a channel link does batch transcription")
-            process_youtube_channel(url, args.lang, refresh=args.refresh, keep_audio=args.keep_audio, limit=args.limit)
+            max_dur = args.max_duration * 60 if args.max_duration else None
+            process_youtube_channel(
+                url, args.lang, refresh=args.refresh, keep_audio=args.keep_audio,
+                limit=args.limit, max_duration_seconds=max_dur,
+            )
             return
 
         # single video

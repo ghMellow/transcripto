@@ -4,6 +4,42 @@ Format per entry: data · cosa è stato fatto · problemi incontrati · soluzion
 
 ---
 
+## 2026-06-30 — Giro di ottimizzazioni (bug + qualità + efficienza)  [sessione: 9ff95dab]
+
+**Intent:** "ora che hai il contesto del progetto, vedi altre aree di ottimizzazione per rendere più efficiente e funzionale il codice? ci sono cose che non ho valutato anche a livello di contesto?" — review libera.
+
+**Divergenze:** Proposte 9 aree raggruppate (bug / architettura / qualità). Utente seleziona via menu: bug #1#2, paragrafi+timestamp #7, e #5#6#8#9; **poi push git**; **poi** drop VLC→ffmpeg (#3#4) come step separato.
+
+**Decisioni:** Fatto ora (no VLC):
+
+- **#1** `extract.extract_audio` non fa più `sys.exit(1)` ma `raise RuntimeError` — `SystemExit` bypassava `except Exception` di `process_folder` e abortiva l'intero batch su un solo file fallito.
+- **#2** WAV temporaneo via `tempfile` nel temp di sistema, non più `input.parent` (la sorgente può essere read-only).
+- **#7** `transcribe` ora ritorna testo **a paragrafi** da `result["segments"]` (gap >2s o >700 char → nuovo paragrafo), fallback a `result["text"]`.
+- **#8** `transcribe(..., initial_prompt=...)`; tutti i caller passano il **titolo** come bias di vocabolario.
+- **#5** canale YouTube: nuova `iter_audio_downloads` (generator lazy) → download/trascrizione/cancellazione **interleaved**, il disco non tiene più tutto il canale insieme. `batch_download` resta come wrapper.
+- **#6** limite durata configurabile: CLI `--max-duration MINUTES`, **default nessun limite** (prima 1h hardcoded scartava in silenzio le lezioni lunghe).
+- **#9** `_get_duration` via `ffprobe` invece di `mdls` (Spotlight dava null su volumi esterni/di rete).
+
+**Esito:** import OK, paragraph builder testato (gap 0.2s unisce, 3.0s spezza), CLI espone `--max-duration`. Commit + push, poi parte #3#4 (drop VLC).
+
+**Rimandato:** #3 #4 (VLC→ffmpeg, single-pass 16k quando non serve `--keep-audio`) come step successivo post-push.
+
+---
+
+## 2026-06-30 — Anti-drift sui file lunghi: tuning decoding (no split)  [sessione: 9ff95dab]
+
+**Intent:** "la trascrizione di audio visto che il modello è in locale ha contesto limitato e per file lunghi potrebbe perdere di capacità... guarda se riesci a capire quanto contesto ha è regolare di conseguenza oppure se conviene staticamente dividere gli audio... ogni 30 min... con un minimo di sovrapposizione... per poi fonderle... il modello vede la parte finale e decide come unire". Lasciata libertà sull'approccio ("hai domande?").
+
+**Divergenze:** Corretta la premessa — Whisper **non** ha un context limit per durata: trascrive a finestre di 30s su tutto il file, la lunghezza non satura nessun contesto. Il problema reale dei file lunghi è il **drift di allucinazioni** (`condition_on_previous_text=True` propaga la spazzatura di una finestra alle successive). Inoltre il "merge fatto da un modello che decide" richiederebbe un **LLM testuale**, qui assente (solo Whisper/ASR in locale): il merge dell'overlap si farebbe comunque in modo **deterministico** (match fuzzy sulla regione sovrapposta), senza LLM.
+
+**Decisioni:** Utente sceglie l'opzione a **impatto minimo**: solo anti-drift params sulla chiamata singola, niente split. "per ora andiamo col tuo fix che ha impatto minore... e vediamo se mi risolve i problemi". Lo split 30min+overlap+merge deterministico resta **come implementazione futura** (vedi sotto), da valutare se il fix minimale non basta.
+
+**Esito:** In `transcriber.py` esposte come costanti `CONDITION_ON_PREVIOUS_TEXT=False` (leva principale: ogni finestra decodificata indipendentemente, niente cascata), `TEMPERATURE` ladder, `COMPRESSION_RATIO_THRESHOLD`, `LOGPROB_THRESHOLD`, `NO_SPEECH_THRESHOLD`, passate a `mlx_whisper.transcribe()`.
+
+**Futura implementazione (se il fix non basta):** split dell'audio (copia/temp, originale intatto) in chunk con overlap, trascrizione per-chunk (decoder riparte pulito = drift azzerato ai confini), **merge deterministico** togliendo il duplicato nell'overlap via match testo — niente LLM. Trasparente all'utente. Soglia di attivazione configurabile (es. solo file >40 min). Applicare **solo alla trascrizione**.
+
+---
+
 ## 2026-06-04 — Download video YouTube con scelta qualità interattiva
 
 **Done:**

@@ -149,9 +149,19 @@ transcript text here...
 **Replaces the broken Swift/SFSpeechRecognizer approach.**
 
 - Uses `mlx-whisper` — pip-installable, Apple Silicon GPU-accelerated via Metal, 100% offline
-- Pre-processes audio to 16kHz mono WAV via ffmpeg before passing to Whisper (improves stability)
+- Pre-processes audio to 16kHz mono WAV via ffmpeg before passing to Whisper (improves stability).
+  The temp WAV is written to the **system temp dir** (`tempfile`), never next to the
+  source file — the input may live on a read-only volume.
 - Model loaded once per process — batch runs reuse it with no re-load overhead
-- Signature: `def transcribe(audio_path: str, language: str = "it") -> str`
+- Signature: `def transcribe(audio_path: str, language: str = None, initial_prompt: str | None = None) -> str`
+  - `initial_prompt` biases Whisper toward domain vocabulary (titles, proper nouns,
+    acronyms). Callers pass the lecture/video **title**.
+- **Output is paragraph-segmented**: Whisper's timestamped segments are grouped into
+  paragraphs (new paragraph on a >`PARAGRAPH_GAP_SECONDS` pause, or when a paragraph
+  exceeds `PARAGRAPH_MAX_CHARS`) instead of one wall of text. Falls back to `result["text"]`
+  if no segments are returned.
+- Anti-drift decoding params (`CONDITION_ON_PREVIOUS_TEXT=False` + temperature ladder +
+  compression/logprob/no-speech thresholds) prevent hallucination cascades on long audio.
 - Cleans up temp WAV after transcription
 
 ```python
@@ -193,7 +203,10 @@ Falls back gracefully if tags are missing (uses filename stem as title).
 
 ### `src/yt_downloader.py`
 
-- Batch downloads audio as `.m4a` via yt-dlp Python API
+- `iter_audio_downloads(videos, dir, max_duration_seconds=None)` — **lazy generator**:
+  yields `(video, audio_path)` one at a time (skip-if-exists, duration-filtered, rate-limited).
+  Lets the channel pipeline transcribe + delete each file before the next download, so the
+  disk never holds the whole channel at once. `batch_download` is a thin eager wrapper over it.
 - Skip-if-exists (resume-safe)
 - 2s delay between downloads to avoid YouTube throttling
 - `socket_timeout=60`, `retries=3` to handle CDN drops (not rate limits)
@@ -215,7 +228,8 @@ CLI entrypoint, registered as `transcripto` via Poetry scripts. Orchestrates:
 - `--name NAME --watch path` — FSEvents-based watch mode (zero CPU at rest)
 - `--youtube URL` — source link only; explicit action flags decide what happens:
   - **channel link** → batch transcription, automatic (the only valid action).
-    `--video` on a channel is an error.
+    `--video` on a channel is an error. Download is **interleaved** with transcription
+    (one video at a time). `--max-duration MINUTES` skips overly long uploads (default: no limit).
   - **single video** (`watch?v=` / `youtu.be/`) → requires at least one action:
     - `--transcribe` → transcribe (audio path; video file not kept)
     - `--video [--quality N]` → download the video file (interactive quality menu,
@@ -237,6 +251,13 @@ All runtime config as named constants at the top of each module:
 | `VLC_PATH` | `extract.py` | `/Applications/VLC.app/Contents/MacOS/VLC` |
 | `DEFAULT_LANGUAGE` | `transcriber.py` | `it` |
 | `WHISPER_MODEL` | `transcriber.py` | `mlx-community/whisper-large-v3-turbo` |
+| `CONDITION_ON_PREVIOUS_TEXT` | `transcriber.py` | `False` (anti-drift on long files) |
+| `TEMPERATURE` | `transcriber.py` | `(0.0, 0.2, 0.4, 0.6, 0.8, 1.0)` |
+| `COMPRESSION_RATIO_THRESHOLD` | `transcriber.py` | `2.4` |
+| `LOGPROB_THRESHOLD` | `transcriber.py` | `-1.0` |
+| `NO_SPEECH_THRESHOLD` | `transcriber.py` | `0.6` |
+| `PARAGRAPH_GAP_SECONDS` | `transcriber.py` | `2.0` (pause that starts a new paragraph) |
+| `PARAGRAPH_MAX_CHARS` | `transcriber.py` | `700` (cap so gapless speech still breaks) |
 
 ---
 

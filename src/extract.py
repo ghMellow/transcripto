@@ -1,7 +1,7 @@
 """Audio extraction from video files using VLC, with real-time progress bar."""
 
+import json
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -19,15 +19,18 @@ def is_audio(path: Path) -> bool:
 
 
 def _get_duration(path: Path) -> float | None:
-    """Return media duration in seconds via mdls (macOS Spotlight, no extra deps)."""
+    """Return media duration in seconds via ffprobe (reliable on any volume)."""
     result = subprocess.run(
-        ["mdls", "-name", "kMDItemDurationSeconds", "-raw", str(path)],
+        [
+            "ffprobe", "-v", "quiet",
+            "-print_format", "json",
+            "-show_format", str(path),
+        ],
         capture_output=True, text=True,
     )
-    val = result.stdout.strip()
     try:
-        return float(val) if val != "(null)" else None
-    except ValueError:
+        return float(json.loads(result.stdout)["format"]["duration"])
+    except (ValueError, KeyError, json.JSONDecodeError):
         return None
 
 
@@ -84,7 +87,8 @@ def extract_audio(video_path: Path, output_path: Path) -> Path:
     _run_with_progress(cmd, output_path, expected_bytes)
 
     if not output_path.exists():
-        print("Error: VLC did not produce output file.", file=sys.stderr)
-        sys.exit(1)
+        # Raise (not sys.exit): a batch run must be able to skip this one file
+        # and continue — SystemExit would bypass the caller's except Exception.
+        raise RuntimeError(f"VLC did not produce output for {video_path.name}")
 
     return output_path
