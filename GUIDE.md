@@ -12,14 +12,15 @@ poetry install
 ## Commands
 
 ```bash
+# NAME is for the folder, change it to customize
 # local: single file
-poetry run transcripto --name NAME PATH
+poetry run transcripto --name local/NAME PATH
 
 # local: folder (batch)
-poetry run transcripto --name NAME PATH/TO/FOLDER/
+poetry run transcripto --name local/NAME PATH/TO/FOLDER/
 
 # local: watch folder for new files
-poetry run transcripto --name NAME --watch PATH/TO/FOLDER/
+poetry run transcripto --name local/NAME --watch PATH/TO/FOLDER/
 
 # NOTE: always wrap YouTube URLs in quotes — zsh treats ? and & as special chars
 #   poetry run transcripto --youtube "https://www.youtube.com/watch?v=ID" --video
