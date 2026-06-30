@@ -1,17 +1,18 @@
-"""Audio extraction from video files using VLC, with real-time progress bar."""
+"""Audio extraction from video files using ffmpeg, with real-time progress bar.
+
+ffmpeg is already a hard dependency (used by transcriber and metadata), so audio
+extraction goes through it too — no separate VLC install needed.
+"""
 
 import json
 import subprocess
-import time
 from pathlib import Path
-
-VLC_PATH = "/Applications/VLC.app/Contents/MacOS/VLC"
 
 AUDIO_EXTENSIONS = {".m4a", ".mp3", ".wav", ".aiff", ".caf", ".aac"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 
 _BAR_WIDTH = 40
-_AUDIO_BITRATE = 192_000  # bits/s — must match the transcode command below
+_AUDIO_BITRATE_KBPS = 192  # AAC bitrate for the kept-audio .m4a artifact
 
 
 def is_audio(path: Path) -> bool:
@@ -34,61 +35,60 @@ def _get_duration(path: Path) -> float | None:
         return None
 
 
+def _hms_to_seconds(ts: str) -> float | None:
+    """Parse ffmpeg out_time (HH:MM:SS.ffffff) into seconds, or None."""
+    try:
+        h, m, s = ts.split(":")
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    except (ValueError, AttributeError):
+        return None
+
+
 def _draw_bar(pct: float) -> None:
     filled = int(pct / 100 * _BAR_WIDTH)
     bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
     print(f"\r  [{bar}] {pct:5.1f}%", end="", flush=True)
 
 
-def _run_with_progress(cmd: list[str], output_path: Path, expected_bytes: int | None) -> subprocess.CompletedProcess:
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def _run_with_progress(cmd: list[str], duration: float | None) -> None:
+    """Run ffmpeg, parsing its -progress stream to drive the bar (or a wait, no duration)."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
 
-    if expected_bytes:
-        while proc.poll() is None:
-            size = output_path.stat().st_size if output_path.exists() else 0
-            _draw_bar(min(size / expected_bytes * 100, 99))
-            time.sleep(0.5)
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.strip()
+        if line == "progress=end":
+            break
+        if duration and line.startswith("out_time="):
+            secs = _hms_to_seconds(line.split("=", 1)[1])
+            if secs is not None:
+                _draw_bar(min(secs / duration * 100, 99))
+
+    proc.wait()
+    if duration:
         _draw_bar(100)
         print()  # newline after bar
     else:
-        # No duration info — show a spinner instead
-        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        i = 0
-        while proc.poll() is None:
-            print(f"\r  {frames[i % len(frames)]} extracting...", end="", flush=True)
-            i += 1
-            time.sleep(0.1)
-        print("\r  done.              ")
-
-    proc.wait()
-    return proc
+        print("  done.")
 
 
 def extract_audio(video_path: Path, output_path: Path) -> Path:
-    """Extract audio track from a video file to M4A via VLC."""
+    """Extract the audio track from a video file to M4A (AAC) via ffmpeg."""
     print(f"Extracting: {video_path.name} → {output_path.name}")
 
     duration = _get_duration(video_path)
-    # expected output bytes: duration × bitrate(bits/s) ÷ 8, with small overhead
-    expected_bytes = int(duration * _AUDIO_BITRATE / 8 * 1.05) if duration else None
-
     cmd = [
-        VLC_PATH,
-        str(video_path),
-        "--intf", "dummy",
-        "--sout",
-        (
-            f"#transcode{{vcodec=none,acodec=mp4a,ab=192,channels=2,samplerate=44100}}"
-            f":std{{access=file,mux=mp4,dst={output_path}}}"
-        ),
-        "vlc://quit",
+        "ffmpeg", "-y", "-i", str(video_path),
+        "-vn", "-acodec", "aac", "-b:a", f"{_AUDIO_BITRATE_KBPS}k",
+        "-progress", "pipe:1", "-nostats", "-loglevel", "error",
+        str(output_path),
     ]
 
-    _run_with_progress(cmd, output_path, expected_bytes)
+    _run_with_progress(cmd, duration)
 
     if not output_path.exists():
         # Raise (not sys.exit): a batch run must be able to skip this one file
         # and continue — SystemExit would bypass the caller's except Exception.
-        raise RuntimeError(f"VLC did not produce output for {video_path.name}")
+        raise RuntimeError(f"ffmpeg did not produce output for {video_path.name}")
 
     return output_path

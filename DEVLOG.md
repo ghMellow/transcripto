@@ -4,6 +4,21 @@ Format per entry: data · cosa è stato fatto · problemi incontrati · soluzion
 
 ---
 
+## 2026-06-30 — Drop VLC → ffmpeg + single-pass per la sola trascrizione  [sessione: 9ff95dab]
+
+**Intent:** continuazione della review precedente — "dopodichè implementa il drop di vlc a favore di ffmpeg" (step separato post-push).
+
+**Decisioni/Esito:**
+
+- **#3** `extract.py` riscritto: estrazione audio via **ffmpeg** (`-vn -acodec aac -b:a 192k`), progress bar guidata dal parser di `-progress` (parse `out_time=`), durata via ffprobe. Eliminata la dipendenza VLC (`VLC_PATH`, constraint `/Applications/VLC.app`). ffmpeg era già dipendenza hard → una dipendenza di sistema in meno, codice cross-platform.
+- **#4** `pipeline.process_file`: per la **sola trascrizione** (no `--keep-audio`) il video va dritto al transcriber, il cui step ffmpeg estrae+ricampiona a 16k mono in **un solo passaggio** — niente più `video→m4a 192k→wav 16k` (doppio decode) né file intermedio da cancellare. Stesso single-pass nel ramo YouTube `--video --transcribe` (prima estraeva un `.m4a` temporaneo da cancellare). Con `--keep-audio` si produce comunque l'`.m4a` di qualità e si trascrive da lì.
+
+**Esito:** test end-to-end su clip ffmpeg sintetica (extract+progress+ffprobe OK), import OK, nessun riferimento VLC residuo nel codice. Docs CLAUDE.md ripulite (diagramma, sezione extract, tabella config, constraints).
+
+**Lesson learned:** quando due moduli usano già lo stesso tool di sistema (ffmpeg) per pezzi diversi del flusso, una seconda dipendenza che fa la stessa cosa (VLC per l'estrazione) è puro costo: rimuoverla semplifica install + constraint senza perdere nulla.
+
+---
+
 ## 2026-06-30 — Giro di ottimizzazioni (bug + qualità + efficienza)  [sessione: 9ff95dab]
 
 **Intent:** "ora che hai il contesto del progetto, vedi altre aree di ottimizzazione per rendere più efficiente e funzionale il codice? ci sono cose che non ho valutato anche a livello di contesto?" — review libera.

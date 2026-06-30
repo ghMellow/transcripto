@@ -9,7 +9,7 @@ Turn video lessons (or any audio) into clean markdown notes, fully local, no ext
 Pipeline:
 
 ```text
-<any path>  →  extract.py (VLC)  →  transcriber.py (mlx-whisper)  →  data/<name>/transcription/<file>.md
+<any path>  →  extract.py (ffmpeg)  →  transcriber.py (mlx-whisper)  →  data/<name>/transcription/<file>.md
 ```
 
 ---
@@ -26,7 +26,7 @@ transcripto/
 │       └── video_list.json  # YouTube metadata cache (YouTube mode only)
 ├── src/
 │   ├── pipeline.py          # CLI entrypoint — orchestrates the full flow
-│   ├── extract.py           # video → audio via VLC
+│   ├── extract.py           # video → audio via ffmpeg
 │   ├── transcriber.py       # transcription via mlx-whisper
 │   ├── metadata.py          # extracts metadata from local files via ffprobe
 │   ├── yt_scraper.py        # lists YouTube channel videos via yt-dlp
@@ -140,9 +140,15 @@ transcript text here...
 ### `src/extract.py`
 
 - Input: any video or audio path
-- Uses VLC (`/Applications/VLC.app/Contents/MacOS/VLC`) to extract audio as `.m4a`
+- Uses **ffmpeg** to extract the audio track as `.m4a` (AAC), with a live progress bar
+  driven by ffmpeg's `-progress` stream (no separate VLC install needed — ffmpeg is
+  already a dependency). Raises `RuntimeError` on failure so a batch run can skip one
+  bad file instead of aborting.
 - Output: `.m4a` written to `data/<name>/audio/`
-- Skips extraction if input is already an audio format (`.m4a`, `.mp3`, `.wav`, `.aiff`)
+- Only used when audio is **kept** (`--keep-audio`). For transcription-only runs the
+  pipeline skips this entirely and feeds the video straight to the transcriber, whose
+  ffmpeg step extracts + resamples to 16kHz mono in a **single pass** (no throwaway m4a).
+- `is_audio()` lets callers detect already-audio inputs (`.m4a`, `.mp3`, `.wav`, ...)
 
 ### `src/transcriber.py`
 
@@ -248,7 +254,6 @@ All runtime config as named constants at the top of each module:
 
 | Constant | Module | Default |
 | --- | --- | --- |
-| `VLC_PATH` | `extract.py` | `/Applications/VLC.app/Contents/MacOS/VLC` |
 | `DEFAULT_LANGUAGE` | `transcriber.py` | `it` |
 | `WHISPER_MODEL` | `transcriber.py` | `mlx-community/whisper-large-v3-turbo` |
 | `CONDITION_ON_PREVIOUS_TEXT` | `transcriber.py` | `False` (anti-drift on long files) |
@@ -279,8 +284,7 @@ No other external dependencies. No API keys. No `.env` needed.
 ## Constraints
 
 - macOS on Apple Silicon (M-series) — mlx-whisper uses Metal, will not run on Intel Mac
-- VLC must be installed at `/Applications/VLC.app`
-- ffmpeg must be installed via Homebrew
+- ffmpeg must be installed via Homebrew (provides `ffmpeg` + `ffprobe`)
 - Python 3.11+
 
 ---

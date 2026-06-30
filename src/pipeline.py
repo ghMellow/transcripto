@@ -118,8 +118,9 @@ def _audio_dir(name: str) -> Path:
 def process_file(input_path: Path, name: str, lang: str, keep_audio: bool = False) -> Path:
     """Transcribe a single video or audio file into data/<name>/transcription/.
 
-    If the input is a video, the extracted audio is deleted after transcription
-    unless keep_audio=True. Original audio files passed directly are never deleted.
+    With keep_audio=True a video's audio is extracted to a kept .m4a first; otherwise
+    the video is transcribed directly (single ffmpeg pass, no intermediate file).
+    Original audio files passed directly are transcribed in place, never modified.
     """
     t_dir = _transcription_dir(name)
     t_dir.mkdir(parents=True, exist_ok=True)
@@ -130,20 +131,24 @@ def process_file(input_path: Path, name: str, lang: str, keep_audio: bool = Fals
         return md_path
 
     if is_audio(input_path):
-        audio_path = input_path
-        extracted = False  # original audio — never delete
-    else:
+        transcribe_src = input_path  # original audio — transcribe in place
+    elif keep_audio:
+        # Produce the kept .m4a artifact, then transcribe from it.
         a_dir = _audio_dir(name)
         a_dir.mkdir(parents=True, exist_ok=True)
         audio_out = a_dir / f"{input_path.stem}.m4a"
         if not audio_out.exists():
             extract_audio(input_path, audio_out)
-        audio_path = audio_out
-        extracted = True  # we created this — safe to delete after
+        transcribe_src = audio_out
+    else:
+        # Transcription-only: feed the video straight to Whisper. The transcriber's
+        # ffmpeg step extracts + resamples to 16kHz mono in a single pass, so no
+        # throwaway intermediate audio file is created (or needs deleting).
+        transcribe_src = input_path
 
     meta = extract_metadata(str(input_path))
     print(f"Transcribing: {input_path.name} [{lang}]")
-    text = transcribe(str(audio_path), lang, initial_prompt=meta["title"])
+    text = transcribe(str(transcribe_src), lang, initial_prompt=meta["title"])
 
     frontmatter = _build_frontmatter(meta)
     md_path.write_text(
@@ -151,10 +156,6 @@ def process_file(input_path: Path, name: str, lang: str, keep_audio: bool = Fals
         encoding="utf-8",
     )
     print(f"Saved: {md_path}")
-
-    if extracted and not keep_audio:
-        audio_path.unlink(missing_ok=True)
-        print(f"Deleted audio: {audio_path.name}")
 
     return md_path
 
@@ -345,9 +346,9 @@ def process_youtube_video_download(
 
     Video → data/<channel>/video/   (kept on disk)
 
-    With transcribe_after=True, audio is extracted from the downloaded video,
-    transcribed to data/<channel>/transcription/, then the temp audio is deleted;
-    no separate audio stream is downloaded. If max_height is given, the interactive
+    With transcribe_after=True, the downloaded video is transcribed directly to
+    data/<channel>/transcription/ (single ffmpeg pass — no separate audio stream
+    downloaded, no intermediate audio file). If max_height is given, the interactive
     menu is skipped and the best stream up to that height is downloaded.
     """
     print(f"Fetching video info: {video_url}")
@@ -383,15 +384,10 @@ def process_youtube_video_download(
         print(f"Transcription exists: {md_path.name}")
         return
 
-    # Extract audio from the downloaded video — only a means to transcribe.
-    audio_dir = DATA_DIR / slug / "audio"
-    audio_dir.mkdir(parents=True, exist_ok=True)
-    audio_tmp = audio_dir / f"{video['id']}.m4a"
-    if not audio_tmp.exists():
-        extract_audio(video_path, audio_tmp)
-
+    # Transcribe straight from the downloaded video — the transcriber's ffmpeg
+    # step extracts + resamples in one pass, so no throwaway audio file is needed.
     print(f"Transcribing: {video['title']} [{lang}]")
-    text = transcribe(str(audio_tmp), lang, initial_prompt=video["title"])
+    text = transcribe(str(video_path), lang, initial_prompt=video["title"])
 
     frontmatter = _build_yt_frontmatter(video)
     md_path.write_text(
@@ -399,8 +395,6 @@ def process_youtube_video_download(
         encoding="utf-8",
     )
     print(f"Saved: {md_path}")
-
-    audio_tmp.unlink(missing_ok=True)  # keep the video, drop the throwaway audio
 
 
 # ---------------------------------------------------------------------------
