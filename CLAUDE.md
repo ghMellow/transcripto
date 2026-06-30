@@ -168,7 +168,14 @@ transcript text here...
   if no segments are returned.
 - Anti-drift decoding params (`CONDITION_ON_PREVIOUS_TEXT=False` + temperature ladder +
   compression/logprob/no-speech thresholds) prevent hallucination cascades on long audio.
-- Cleans up temp WAV after transcription
+- **Long-audio chunking**: files longer than `SPLIT_THRESHOLD_SECONDS` (1h) are sliced
+  into overlapping `CHUNK_LENGTH_SECONDS` (1h) chunks with `CHUNK_OVERLAP_SECONDS` (15s)
+  overlap, each transcribed independently (decoder reset = hard ceiling on drift), then
+  **merged deterministically by timestamp** — `_merge_chunk_segments` cuts each overlap
+  at its midpoint so a segment is kept from exactly one chunk. No LLM, no text matching;
+  the overlap exists so a sentence straddling a cut is captured whole in one chunk.
+  Slicing is done on the already-produced 16kHz WAV (fast, sample-accurate).
+- Cleans up temp WAV (and per-chunk temp WAVs) after transcription
 
 ```python
 import mlx_whisper
@@ -262,6 +269,9 @@ All runtime config as named constants at the top of each module:
 | `COMPRESSION_RATIO_THRESHOLD` | `transcriber.py` | `2.4` |
 | `LOGPROB_THRESHOLD` | `transcriber.py` | `-1.0` |
 | `NO_SPEECH_THRESHOLD` | `transcriber.py` | `0.6` |
+| `SPLIT_THRESHOLD_SECONDS` | `transcriber.py` | `3600` (chunk files longer than 1h) |
+| `CHUNK_LENGTH_SECONDS` | `transcriber.py` | `3600` (1h cuts) |
+| `CHUNK_OVERLAP_SECONDS` | `transcriber.py` | `15` (overlap between chunks) |
 | `PARAGRAPH_GAP_SECONDS` | `transcriber.py` | `2.0` (pause that starts a new paragraph) |
 | `PARAGRAPH_MAX_CHARS` | `transcriber.py` | `700` (cap so gapless speech still breaks) |
 

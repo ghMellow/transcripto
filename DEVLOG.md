@@ -4,6 +4,28 @@ Format per entry: data · cosa è stato fatto · problemi incontrati · soluzion
 
 ---
 
+## 2026-06-30 — Split chunked per file lunghi (la "implementazione futura" ora fatta)  [sessione: 9ff95dab]
+
+**Intent:** "fai una revisione del codice ... Se si procedi con l'implementare lo split ... però tu dici che per file sopra l'ora accade? o sopra le 2? scegli tu con che soglia attivare la divisione (es tagli da 1 ora)" — scelta soglia delegata a me.
+
+**Decisioni (soglie scelte):**
+
+- **Attivazione: durata > 1h** (`SPLIT_THRESHOLD_SECONDS=3600`). Sotto l'ora resta single-pass.
+- **Tagli da 1h** (`CHUNK_LENGTH_SECONDS=3600`) con **15s di overlap** (`CHUNK_OVERLAP_SECONDS=15`) — rispetta l'esempio dell'utente ("es tagli da 1 ora").
+- Divergenza dall'idea originale (30min): con `condition_on_previous_text=False` il drift è già limitato per-finestra, quindi tagli più lunghi = **meno cuciture** = minor rischio di artefatti al merge; lo split serve da rete di sicurezza sui file molto lunghi (memoria mel + reset seek).
+
+**Esito:**
+
+- `transcribe()` ora: preprocessa il full→WAV 16k una volta, sonda la durata, e se >soglia chiama `_transcribe_chunked` (slice del WAV via ffmpeg `-ss/-t`, trascrizione per-chunk con gli stessi anti-drift params), poi `_merge_chunk_segments`.
+- **Merge deterministico timestamp-midpoint** (niente LLM, niente match di testo): nell'overlap tra chunk i e i+1 il taglio è il punto medio; ogni segmento è tenuto dal chunk che possiede la sua metà dell'overlap. L'overlap garantisce che una frase a cavallo sia intera in almeno un chunk.
+- Refactor: estratti `_whisper()` (params condivisi), `_audio_duration()`, `_slice_wav()`.
+
+**Test (senza modello):** `_chunk_spans(150min)` → 3 chunk con overlap 15s esatti e coverage fino a fine file; `_merge_chunk_segments` dedup verificato (riga duplicata nell'overlap → tenuta una volta sola, ordine corretto).
+
+**Lesson learned:** il merge per timestamp-midpoint è più robusto del match fuzzy di testo: usa solo le posizioni, è O(n), e non sbaglia mai su ripetizioni legittime nel parlato (che un dedup testuale taglierebbe per errore).
+
+---
+
 ## 2026-06-30 — Drop VLC → ffmpeg + single-pass per la sola trascrizione  [sessione: 9ff95dab]
 
 **Intent:** continuazione della review precedente — "dopodichè implementa il drop di vlc a favore di ffmpeg" (step separato post-push).
