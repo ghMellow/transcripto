@@ -212,7 +212,8 @@ Falls back gracefully if tags are missing (uses filename stem as title).
 - `iter_audio_downloads(videos, dir, max_duration_seconds=None)` — **lazy generator**:
   yields `(video, audio_path)` one at a time (skip-if-exists, duration-filtered, rate-limited).
   Lets the channel pipeline transcribe + delete each file before the next download, so the
-  disk never holds the whole channel at once. `batch_download` is a thin eager wrapper over it.
+  disk never holds the whole channel at once. `max_duration_seconds=None` = no length limit
+  (the CLI's `--max-duration` is off by default).
 - Skip-if-exists (resume-safe)
 - 2s delay between downloads to avoid YouTube throttling
 - `socket_timeout=60`, `retries=3` to handle CDN drops (not rate limits)

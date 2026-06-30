@@ -44,9 +44,17 @@ poetry run transcripto --youtube "CHANNEL_URL" --lang en
 # youtube channel: check for new videos and download up to N
 poetry run transcripto --youtube "CHANNEL_URL" --refresh --limit N
 
+# youtube channel: skip uploads longer than 90 min (default: no limit)
+poetry run transcripto --youtube "CHANNEL_URL" --max-duration 90
+
 # transcribe already-downloaded audio folder
 poetry run transcripto --batch-transcribe data/NAME/audio/
 ```
+
+> Channel downloads are **interleaved** with transcription: one video is downloaded,
+> transcribed, then its audio deleted (unless `--keep-audio`) before the next — the
+> disk never holds the whole channel's audio at once. Resume-safe: already-transcribed
+> videos are skipped on re-run.
 
 ---
 
@@ -63,6 +71,7 @@ poetry run transcripto --batch-transcribe data/NAME/audio/
 | `--quality HEIGHT` | Max video height in px (e.g. `1080`) — skips the `--video` quality menu |
 | `--refresh` | Fetch the 50 most recent channel videos and merge new ones into cache |
 | `--limit N` | Process at most N pending videos, most recent first |
+| `--max-duration MIN` | Channel only: skip videos longer than MIN minutes (default: no limit) |
 | `--keep-audio` | Keep `.m4a` after transcription (default: deleted to save space) |
 | `--batch-transcribe DIR` | Transcribe all audio files in DIR, skip already-done |
 | `--out-dir DIR` | Output dir for `--batch-transcribe` (default: `../transcription/`) |

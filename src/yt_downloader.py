@@ -7,7 +7,6 @@ from pathlib import Path
 
 _DELAY_BETWEEN_DOWNLOADS = 2  # seconds — avoids YouTube throttling
 _SOCKET_TIMEOUT = 60           # seconds — abort stalled connections
-MAX_DURATION_SECONDS = 3600    # skip videos longer than 1 hour
 
 # Containers a merged video file may end up in (native, no re-encode).
 # mp4 when streams are mp4-compatible, otherwise mkv/webm for VP9/AV1.
@@ -279,8 +278,3 @@ def iter_audio_downloads(
         yield video, path
         if i < total:
             time.sleep(_DELAY_BETWEEN_DOWNLOADS)
-
-
-def batch_download(videos: list[dict], output_dir: Path) -> list[Path]:
-    """Download audio for all videos into output_dir, skipping already-downloaded ones."""
-    return [path for _, path in iter_audio_downloads(videos, output_dir, MAX_DURATION_SECONDS)]
