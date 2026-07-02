@@ -55,7 +55,18 @@ MEDIA_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
 # ---------------------------------------------------------------------------
 
 def _q(v: str) -> str:
-    return f'"{v}"'
+    return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _yaml_tags(tags: list[str]) -> str:
+    return "[" + ", ".join(_q(t) for t in tags) + "]"
+
+
+def _yaml_block(key: str, text: str) -> list[str]:
+    """Render a multi-line string as a YAML literal block scalar (safe for any content)."""
+    lines = [f"{key}: |"]
+    lines.extend(f"  {line}" for line in text.splitlines())
+    return lines
 
 
 def _safe_stem(title: str, max_len: int = 120) -> str:
@@ -97,9 +108,12 @@ def _build_yt_frontmatter(video: dict) -> str:
         f"channel: {video['channel']}",
         f"date_uploaded: {date}",
         f"duration: {video['duration']}",
-        "tags: []",
-        "---",
+        f"tags: {_yaml_tags(video.get('tags') or [])}",
     ]
+    description = (video.get("description") or "").strip()
+    if description:
+        lines.extend(_yaml_block("description", description))
+    lines.append("---")
     return "\n".join(lines)
 
 

@@ -125,13 +125,22 @@ source: https://youtube.com/watch?v=abc123
 channel: IBM Technology
 date_uploaded: 2024-03-15
 duration: 8:32
-tags: []
+tags: ["quantum computing", "ibm", "qubits"]
+description: |
+  The uploader's video description, verbatim,
+  as a YAML literal block (omitted when empty).
 ---
 
 # What is Quantum Computing?
 
 transcript text here...
 ```
+
+`tags` and `description` come from the video's YouTube metadata (yt-dlp full extract).
+The channel flat-playlist scan doesn't include them, so in channel mode they are
+captured at audio-download time (`download_audio` enriches the video dict in place);
+already-downloaded audio re-transcribed via `--batch-transcribe` falls back to empty
+tags / no description since `video_list.json` doesn't store them.
 
 ---
 

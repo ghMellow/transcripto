@@ -4,6 +4,20 @@ Format per entry: data · cosa è stato fatto · problemi incontrati · soluzion
 
 ---
 
+## 2026-07-02 — Tags + description YouTube nel frontmatter  [sessione: a3448c3f]
+
+**Intent:** "guardando i campi tag questi sono sempre vuoti si riescno a estrarre dai metadati del video yt? se si implementa la cosa come anche la descrizione-summary per esempio" — implementazione delegata.
+
+**Divergenze:**
+
+- `description` scritta come YAML literal block (`description: |`) invece di stringa quotata — le descrizioni YT sono multilinea con caratteri arbitrari, il block scalar è l'unico formato sempre valido (verificato con yaml.safe_load su input insidiosi).
+- Canale: la scansione flat-playlist non espone tags/description → catturati al momento del download audio (`extract_info(download=True)` in `download_audio`, arricchisce il dict in place). `--batch-transcribe` resta senza (video_list.json non li ha).
+- `_q()` ora esegue escape di `"` e `\` (prima un titolo con virgolette rompeva il YAML).
+
+**Esito/Problemi:** frontmatter YT ora include `tags: [...]` e `description` (omessa se vuota); output locale invariato (ffprobe raramente ha tag utili). Testato con fetch reale (jNQXAC9IVRw) + validazione YAML.
+
+---
+
 ## 2026-06-30 — Split chunked per file lunghi (la "implementazione futura" ora fatta)  [sessione: 9ff95dab]
 
 **Intent:** "fai una revisione del codice ... Se si procedi con l'implementare lo split ... però tu dici che per file sopra l'ora accade? o sopra le 2? scegli tu con che soglia attivare la divisione (es tagli da 1 ora)" — scelta soglia delegata a me.

@@ -80,6 +80,8 @@ def _build_video_dict(info: dict, url: str) -> dict:
         "channel": info.get("uploader") or info.get("channel", ""),
         "date_uploaded": info.get("upload_date", ""),
         "duration": duration,
+        "tags": info.get("tags") or [],
+        "description": info.get("description") or "",
     }
 
 
@@ -177,7 +179,14 @@ def download_audio(video: dict, output_dir: Path) -> Path:
     }
     print(f"  Downloading audio ...")
     with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.download([video["url"]])
+        info = ydl.extract_info(video["url"], download=True)
+
+    # Flat-playlist entries (channel mode) lack tags/description — the full
+    # extract done by the download has them, so enrich the dict in place for
+    # the frontmatter built downstream.
+    if info:
+        video.setdefault("tags", info.get("tags") or [])
+        video.setdefault("description", info.get("description") or "")
 
     return out_path
 
